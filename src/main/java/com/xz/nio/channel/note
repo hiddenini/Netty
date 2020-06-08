@@ -1,0 +1,15 @@
+FileChannel  常用的方法
+
+int read(ByteBuffer dst)  Reads a sequence of bytes from this channel into the given buffer.
+
+int write(ByteBuffer src)  Writes a sequence of bytes to this channel from the given buffer.
+
+public abstract long transferFrom(ReadableByteChannel src,
+                                      long position, long count)
+
+Transfers bytes into this channel's file from the given readable byte channel.
+
+public abstract long transferTo(long position, long count,
+                                    WritableByteChannel target)
+
+Transfers bytes from this channel's file to the given writable byte channel.

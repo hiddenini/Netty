@@ -1,4 +1,4 @@
-package com.xz.nio;
+package com.xz.nio.buffer;
 
 import java.nio.IntBuffer;
 
@@ -9,6 +9,8 @@ import java.nio.IntBuffer;
  * 1--position 下一个要被操作的索引 每次进行读写时都会被改变,为下次读写做准备
  * 2--limit    最大的索引  缓冲区的当前终点,读写操作不能超过该位置,可以被修改
  * 3--capacity 容量 初始化时被设置且不能修改
+ *
+ *比较常用的是ByteBuffer
  */
 public class NioBuffer {
     public static void main(String[] args) {
