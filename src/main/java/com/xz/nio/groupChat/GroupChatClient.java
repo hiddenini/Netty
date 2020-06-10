@@ -1,4 +1,4 @@
-package com.xz.nio.channel01;
+package com.xz.nio.groupChat;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
