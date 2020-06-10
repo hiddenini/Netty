@@ -6,6 +6,8 @@ import java.nio.channels.FileChannel;
 
 /**
  * 使用FileChannel 和ByteBuffer 将字符串写入到文件中
+ *
+ * FileChannel无法设置为非阻塞模式 它总是运行在阻塞模式下
  */
 public class FileChannel01 {
     public static void main(String[] args) throws Exception {
