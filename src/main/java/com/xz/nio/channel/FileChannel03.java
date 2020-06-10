@@ -21,6 +21,9 @@ public class FileChannel03 {
         while (true) {
             byteBuffer.clear();
             int read = fileInputStreamChannel.read(byteBuffer);
+            /**
+             * 如果已经读完
+             */
             if (read == -1) {
                 fileInputStream.close();
                 fileOutputStream.close();
