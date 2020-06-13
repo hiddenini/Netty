@@ -21,7 +21,7 @@ public class NettyClient {
                             socketChannel.pipeline().addLast(new ClientHandler());
                         }
                     });
-            ChannelFuture channelFuture = bootstrap.connect("127.0.0.1", 6668).sync();
+            ChannelFuture channelFuture = bootstrap.connect("127.0.0.1", 1111).sync();
             channelFuture.channel().closeFuture().sync();
         } finally {
             group.shutdownGracefully();

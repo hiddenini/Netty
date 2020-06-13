@@ -24,8 +24,13 @@ public class ServerHandler extends ChannelInboundHandlerAdapter {
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         System.out.println("服务端读取线程:" + Thread.currentThread().getId());
         System.out.println("server ctx:" + ctx);
+        /**
+         * ctx 包含channel和pipeline
+         */
         Channel channel = ctx.channel();
-        channel.write(null);
+        /**
+         * pipeline是一个双向链表  channel和pipeline是相互包含的关系
+         */
         ChannelPipeline pipeline = ctx.pipeline();
 
         ByteBuf buf = (ByteBuf) msg;

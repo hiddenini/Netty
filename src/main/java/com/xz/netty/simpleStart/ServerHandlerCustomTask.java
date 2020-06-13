@@ -25,28 +25,32 @@ public class ServerHandlerCustomTask extends ChannelInboundHandlerAdapter {
         /**
          * 1--用户自定义的普通任务,跟下execute() 可以看到是被
          *
-         * 如果是当前reactor线程则直接add到了SingleThreadEventExecutor中的taskQueue(LinkedBlockingQueue<Runnable>)中.
+         * 如果是当前reactor线程则直接add到了当前pipeline的channel的eventLoop里面的taskQueue (SingleThreadEventExecutor中的taskQueue)(LinkedBlockingQueue<Runnable>)中.
          *
          * 否则尝试启动线程(里面保证了只有一个线程)再将任务添加到taskQueue中去
+         *
+         * 运行2个client 可以看到会接受到client的消息,并且立刻返回hello ,客户端,我是服务器
+         *
+         * 等待耗时任务结束后返回hello ,客户端,我是服务器发来的阻塞消息
          *
          */
         ctx.channel().eventLoop().execute(() -> {
             System.out.println("我是一个很耗时的任务-----");
             try {
-                TimeUnit.SECONDS.sleep(5);
+                TimeUnit.SECONDS.sleep(10);
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
             System.out.println("耗时任务结束-----");
-            ctx.writeAndFlush(Unpooled.copiedBuffer("hello ,客户端,我是服务器", CharsetUtil.UTF_8));
-        });
+            ctx.writeAndFlush(Unpooled.copiedBuffer("hello ,客户端,我是服务器发来的阻塞消息", CharsetUtil.UTF_8));
 
+        });
         /**
          * 2--用户自定义的定时任务,跟下schedule() 可以看到是被
          *
          * 如果是当前reactor的线程则
          *
-         * add到了AbstractScheduledEventExecutor中的taskQueue(PriorityQueue<ScheduledFutureTask<?>>)中
+         * add到了当前pipeline的channel的eventLoop里面的(AbstractScheduledEventExecutor中的scheduledTaskQueue)(PriorityQueue<ScheduledFutureTask<?>>)中
          *
          * 这里为什么要使用优先级队列，而不需要考虑多线程的并发？ 因为我们现在讨论的场景，调用链的发起方是reactor线程，不会存在多线程并发
          *
@@ -97,7 +101,7 @@ public class ServerHandlerCustomTask extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelReadComplete(ChannelHandlerContext ctx) throws Exception {
-        //ctx.writeAndFlush(Unpooled.copiedBuffer("hello ,客户端,我是服务器", CharsetUtil.UTF_8));
+        ctx.writeAndFlush(Unpooled.copiedBuffer("hello ,客户端,我是服务器", CharsetUtil.UTF_8));
     }
 
     @Override
