@@ -1,6 +1,5 @@
-package com.xz.netty.groupChat;
+package com.xz.netty.groupChat.basic;
 
-import com.xz.netty.simpleStart.ClientHandler;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;

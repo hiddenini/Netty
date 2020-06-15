@@ -1,6 +1,5 @@
 package com.xz.netty.groupChat.highLevel;
 
-import com.xz.netty.groupChat.GroupChatServerHandler;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
@@ -12,6 +11,9 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.string.StringDecoder;
 import io.netty.handler.codec.string.StringEncoder;
 
+/**
+ * 可以指定聊天人的id 如果不指定则为群聊
+ */
 public class GroupChatPointServer {
     private int port;
 

@@ -1,7 +1,6 @@
 package com.xz.netty.groupChat.highLevel;
 
 import com.alibaba.fastjson.JSON;
-import com.xz.netty.groupChat.GroupChatClientHandler;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -9,7 +8,6 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.string.StringDecoder;
 import io.netty.handler.codec.string.StringEncoder;
-import io.netty.util.internal.StringUtil;
 
 import java.util.Arrays;
 import java.util.Random;

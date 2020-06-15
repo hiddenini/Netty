@@ -1,4 +1,4 @@
-package com.xz.netty.groupChat;
+package com.xz.netty.groupChat.basic;
 
 import io.netty.channel.*;
 import io.netty.channel.group.ChannelGroup;

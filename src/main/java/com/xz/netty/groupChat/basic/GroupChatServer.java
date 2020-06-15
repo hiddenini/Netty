@@ -1,4 +1,4 @@
-package com.xz.netty.groupChat;
+package com.xz.netty.groupChat.basic;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelFuture;
@@ -11,6 +11,9 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.string.StringDecoder;
 import io.netty.handler.codec.string.StringEncoder;
 
+/**
+ * 群聊
+ */
 public class GroupChatServer {
     private int port;
 
