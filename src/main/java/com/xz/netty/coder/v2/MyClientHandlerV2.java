@@ -1,7 +1,9 @@
 package com.xz.netty.coder.v2;
 
+import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.util.CharsetUtil;
 
 
 public class MyClientHandlerV2 extends SimpleChannelInboundHandler<Long> {
@@ -54,7 +56,7 @@ public class MyClientHandlerV2 extends SimpleChannelInboundHandler<Long> {
         }
         4. 因此我们编写 Encoder 是要注意传入的数据类型和处理的数据类型一致
         */
-       // ctx.writeAndFlush(Unpooled.copiedBuffer("abcdabcdabcdabcd",CharsetUtil.UTF_8));
+        //ctx.writeAndFlush(Unpooled.copiedBuffer("abcdabcdabcdabcd", CharsetUtil.UTF_8));
 
     }
 }
