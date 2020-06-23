@@ -1,4 +1,4 @@
-package com.xz.netty.coder;
+package com.xz.netty.coder.v1;
 
 
 import io.netty.buffer.ByteBuf;

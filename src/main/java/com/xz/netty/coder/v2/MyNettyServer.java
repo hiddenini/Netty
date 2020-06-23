@@ -1,5 +1,8 @@
-package com.xz.netty.coder;
+package com.xz.netty.coder.v2;
 
+import com.xz.netty.coder.v1.MyAnotherDecoder;
+import com.xz.netty.coder.v1.MyDecoder;
+import com.xz.netty.coder.v1.MyServerHandler;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -8,13 +11,6 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 
 public class MyNettyServer {
     public static void main(String[] args) throws Exception {
-        /**
-         * 创建两个EventLoopGroup bossGroup workGroup命名约定俗成是这样
-         *
-         * 含有的子线程的数量默认的是cpu核数*2，也可以自己指定
-         *
-         * 指定boss 1  work2  启动3个客户端可以看到 服务端读取线程:id  id只有2个是在被重复使用
-         */
         EventLoopGroup bossGroup = new NioEventLoopGroup();
         EventLoopGroup workGroup = new NioEventLoopGroup();
 
@@ -29,9 +25,13 @@ public class MyNettyServer {
                         @Override
                         protected void initChannel(SocketChannel socketChannel) throws Exception {
                             ChannelPipeline pipeline = socketChannel.pipeline();
-                            pipeline.addLast("myEncoder", new MyDecoder());
-                            pipeline.addLast(new MyAnotherDecoder());
-                            pipeline.addLast(new MyServerHandler());
+                            pipeline.addLast("myDecoder", new MyByteToLongDecoder());
+                            //入站的handler进行解码 MyByteToLongDecoder
+                            pipeline.addLast(new MyByteToLongDecoder());
+                            //出站的handler进行编码
+                            pipeline.addLast(new MyLongToByteEncoder());
+                            //自定义的handler 处理业务逻辑
+                            pipeline.addLast(new MyServerHandlerV2());
                         }
                     });
             ChannelFuture channelFuture = serverBootstrap.bind(6668).sync();
