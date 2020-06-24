@@ -26,7 +26,11 @@ public class MyNettyClient {
                             pipeline.addLast(new MyLongToByteEncoder());
 
                             //这时一个入站的解码器(入站handler )
-                            pipeline.addLast(new MyByteToLongDecoder());
+                            //pipeline.addLast(new MyByteToLongDecoder());
+                            /**
+                             * 使用MyReplayDecoder也可以
+                             */
+                            pipeline.addLast(new MyReplayDecoder());
                             //加入一个自定义的handler ， 处理业务
                             pipeline.addLast(new MyClientHandlerV2());
 

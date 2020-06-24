@@ -27,9 +27,14 @@ public class MyNettyServer {
                             ChannelPipeline pipeline = socketChannel.pipeline();
                             pipeline.addLast("myDecoder", new MyByteToLongDecoder());
                             //入站的handler进行解码 MyByteToLongDecoder
-                            pipeline.addLast(new MyByteToLongDecoder());
+                            //pipeline.addLast(new MyByteToLongDecoder());
+                            /**
+                             * 使用MyReplayDecoder也可以
+                             */
+                            pipeline.addLast(new MyReplayDecoder());
                             //出站的handler进行编码
                             pipeline.addLast(new MyLongToByteEncoder());
+
                             //自定义的handler 处理业务逻辑
                             pipeline.addLast(new MyServerHandlerV2());
                         }
