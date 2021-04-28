@@ -1,0 +1,355 @@
+netty服务端的启动
+ 1--创建服务端channel
+    bind()-->initAndRegister()-->channel = channelFactory.newChannel();-->ReflectiveChannelFactory  return clazz.newInstance();
+
+    serverBootstrap.channel(NioServerSocketChannel.class)--> return channelFactory(new ReflectiveChannelFactory<C>(channelClass));
+
+    -->return clazz.newInstance(); 这个clazz就是上面一个方法中的NioServerSocketChannel.class
+
+    在NioServerSocketChannel的构造函数中-->this(newSocket(DEFAULT_SELECTOR_PROVIDER)
+
+    --> return provider.openServerSocketChannel(); 返回的是ServerSocketChannel 这是jdk nio中的类
+
+        public NioServerSocketChannel(ServerSocketChannel channel) {
+            super(null, channel, SelectionKey.OP_ACCEPT);
+            config = new NioServerSocketChannelConfig(this, javaChannel().socket());
+        }
+
+    -->config = new NioServerSocketChannelConfig(this, javaChannel().socket()); tcp参数配置类
+
+    -->super(null, channel, SelectionKey.OP_ACCEPT); AbstractNioChannel() --> ch.configureBlocking(false);
+
+    --> AbstractChannel #     protected AbstractChannel(Channel parent) {
+                                  this.parent = parent;
+                                  id = newId();
+                                  unsafe = newUnsafe();
+                                  pipeline = newChannelPipeline();
+                              }
+
+
+
+ 2--初始化服务端channel
+      AbstractBootstrap# initAndRegister() -->init(channel);
+
+      -->  channel.config().setOptions(options);     channel.attr(key).set(e.getValue()); 设置channel option 和attr
+
+      -->childOptions.entrySet().toArray(newOptionArray(childOptions.size())); 设置children option
+
+      --> childAttrs.entrySet().toArray(newAttrArray(childAttrs.size())) 设置children attr
+
+       -->p.addLast(....) 设置服务端的handler
+
+       -->   pipeline.addLast(new ServerBootstrapAcceptor) 设置ServerBootstrapAcceptor
+
+
+ 3--注册selector
+       AbstractBootstrap#initAndRegister() --ChannelFuture regFuture = config().group().register(channel);
+
+       -->AbstractChannel#register() -->            AbstractChannel.this.eventLoop = eventLoop;
+
+       -->  register0(promise);--> doRegister();
+
+        -->AbstractNioChannel# selectionKey = javaChannel().register(eventLoop().selector, 0, this);  java nio 操作
+
+       把自己当作一个att传入了register(方法中)
+
+       -->AbstractChannel # register0()--> pipeline.invokeHandlerAddedIfNeeded(); 自定义的ServerHandler中的handlerAdded
+
+       --> AbstractChannel # register0() -->pipeline.fireChannelRegistered(); 自定义的ServerHandler中的channelRegistered
+
+ 4--端口绑定
+      AbstractBootstrap# doBind-->doBind0(regFuture, channel, localAddress, promise);
+
+      AbstractChannel#bind -->doBind(localAddress); -->NioServerSocketChannel# doBind-->  javaChannel().bind(localAddress, config.getBacklog());
+
+      AbstractChannel#bind  -->pipeline.fireChannelActive();
+
+      端口绑定完成之后-->pipeline.fireChannelActive()
+                  if (!wasActive && isActive()) {
+                      invokeLater(new Runnable() {
+                          @Override
+                          public void run() {
+                              pipeline.fireChannelActive();
+                          }
+                      });
+                  }
+
+       -->DefaultChannelPipeline.HeadContext.channelActive -->   readIfIsAutoRead();
+
+       -->AbstractNioChannel#doBeginRead() -->  selectionKey.interestOps(interestOps | readInterestOp); 服务端感兴趣的事件增加一个accept事件
+
+       这里的 readInterestOp是在NioServerSocketChannel# 构造方法 NioServerSocketChannel()-->super(null, channel, SelectionKey.OP_ACCEPT);
+
+
+
+NioEventLoop https://blog.csdn.net/qq_24313635/article/details/80989450
+默认情况下 netty服务端启多少个线程? 何时启动?
+
+Netty是如何解决jdk空轮询bug的?
+
+Netty是如何保证异步串行无锁化?
+
+NioEventLoop创建
+ -->this(0) --> MultithreadEventLoopGroup#MultithreadEventLoopGroup. super(nThreads == 0 ? DEFAULT_EVENT_LOOP_THREADS : nThreads, executor, args);
+
+ --> executor = new ThreadPerTaskExecutor(newDefaultThreadFactory()); 线程创建器
+
+  ThreadPerTaskExecutor
+     每次执行任务都会创建一个线程实体
+     NioEventLoop线程命名规则nioEventLoop-1-xx    DefaultThreadFactory# newThread.Thread t = newThread(new DefaultRunnableDecorator(r), prefix + nextId.incrementAndGet());
+
+     --> DefaultThreadFactory#newThread .return new FastThreadLocalThread(threadGroup, r, name); 创建的线程是FastThreadLocalThread
+
+ --> children[i] = newChild(executor, args); 构建NioEventLoop
+
+      super()-->SingleThreadEventExecutor#SingleThreadEventExecutor.   taskQueue = newTaskQueue(this.maxPendingTasks);
+
+      --> newTaskQueue#newTaskQueue.return PlatformDependent.newMpscQueue(maxPendingTasks);    创建一个MpscQueue 保存异步任务的队列
+
+      this.executor = ObjectUtil.checkNotNull(executor, "executor");     保存线程执行器  ThreadPerTaskExecutor
+
+
+    -->NioEventLoopGroup#newChild -->NioEventLoop#NioEventLoop  --> selector = openSelector(); 创建一个selector
+
+    --> MultithreadEventLoopGroup#MultithreadEventLoopGroup .chooser = chooserFactory.newChooser(children); 线程选择器
+
+                if (isPowerOfTwo(executors.length)) {
+                //后面计算是可以使用位运算 index++  & (length-1)
+                    return new PowerOfTowEventExecutorChooser(executors);
+
+                    #next-->return executors[idx.getAndIncrement() & executors.length - 1];
+                } else {
+                //普通 abs(index++ % length)
+                    return new GenericEventExecutorChooser(executors);
+
+                    #next--> return executors[Math.abs(idx.getAndIncrement() % executors.length)]
+                }
+
+
+NioEventLoop启动触发器
+
+    服务端启动绑定端口
+    AbstractBootstrap# doBind.doBind0--> channel.eventLoop().execute()-->SingleThreadEventExecutor# execute
+
+    --> boolean inEventLoop = inEventLoop();--> startThread(); addTask(task); -->doStartThread()
+
+    -->executor.execute() executor是在创建NioEventLoop时创建的ThreadPerTaskExecutor  每次执行任务都会创建一个FastThreadLocalThread线程实体
+
+    -->SingleThreadEventExecutor.this.run();
+
+    新连接接入通过chooser绑定一个NioEventLoop
+
+NioEventLoop执行
+    NioEventLoop#run() for(;;)
+    --> select(wakenUp.getAndSet(false)); 轮询io事件
+
+        1--deadline以及任务穿插逻辑处理
+              long selectDeadLineNanos = currentTimeNanos + delayNanos(currentTimeNanos);
+              计算定时任务队列的第一个任务的截至时间
+              for(;;)
+
+              if (hasTasks() && wakenUp.compareAndSet(false, true))
+              如果有异步任务需要执行 并且wakenUp已经是true 为了避免异步任务在select完成之前都无法执行 所以这里需要再次检查
+
+        2--阻塞式select
+
+               int selectedKeys = selector.select(timeoutMillis);
+
+               if (selectedKeys != 0 || oldWakenUp || wakenUp.get() || hasTasks() || hasScheduledTasks())
+               如果已经select到事件  已经被唤醒 有异步的任务 有定时任务
+               那么结束本次select
+
+        3--避免jdk空轮询bug
+            selector在没有结果的情况下，依然被唤醒，导致一直空轮询，cpu100%
+            如果进行了512次空轮询 那么重新构建Selector 将旧的selector上面的selectionKey全部转移到新的selector
+            rebuildSelector();
+
+            先定义当前时间currentTimeNanos。
+            接着计算出一个执行最少需要的时间timeoutMillis。
+            每次对selectCnt做++操作。
+            进行判断，如果到达执行到最少时间，则seletCnt重置为1。(进行了一次正常的轮询则将seletCnt重置为1)
+            //代码执行到这里说明肯定执行了一次select long time = System.nanoTime();
+            //也就是说if (selectedKeys != 0 || oldWakenUp || wakenUp.get() || hasTasks() || hasScheduledTasks()) 这个条件是不成立的
+            //也就是说没有选择到事件或者队列没有任务 并且事件小于超时事件 那么就是一个空轮询
+            //如果select耗时 >= select时设置的超时时间,没有发生空轮循.selectCnt重置为1,执行下一次select
+            一旦到达SELECTOR_AUTO_REBUILD_THRESHOLD这个阀值，就需要重建selector来解决这个问题。
+            这个阀值默认是512。
+
+    --> processSelectedKeys();处理io事件
+
+        NioEventLoop# openSelector() -->final SelectedSelectionKeySet selectedKeySet = new SelectedSelectionKeySet();
+
+        -->SelectedSelectionKeySet() netty自己通过数组实现的一个set
+
+        -->   processSelectedKeysOptimized(selectedKeys.flip());
+
+        --> processSelectedKey(k, (AbstractNioChannel) a);
+
+
+    --> runAllTasks();处理异步任务队列
+        task的分类和添加
+        SingleThreadEventExecutor#  addTask(task);-->SingleThreadEventExecutor#offerTask   return taskQueue.offer(task);
+
+
+        定时任务的添加
+        AbstractScheduledEventExecutor# schedule --> return schedule()
+
+        -->        if (inEventLoop()) {
+                       scheduledTaskQueue().add(task);
+                   } else {
+                   //如果不是当前的EventLoop 那么新开一个线程add 因为scheduledTaskQueue = new PriorityQueue<ScheduledFutureTask<?>>();
+                   //不是线程安全的队列 需要保证线程安全 那么把添加任务这个操作当做一个普通的task按照上面那种方式操作
+                       execute(new Runnable() {
+                           @Override
+                           public void run() {
+                               scheduledTaskQueue().add(task);
+                           }
+                       });
+                   }
+
+
+
+        任务的聚合
+        SingleThreadEventExecutor#runAllTasks--> fetchedAll = fetchFromScheduledTaskQueue();
+
+        -->  Runnable scheduledTask  = pollScheduledTask(nanoTime);
+
+        -->ScheduledFutureTask 是按照 deadlineNanos --id 排序的
+
+        -->  将定时任务add到taskQueue(普通任务队列)中 如果失败则要重新add到定时任务的队列中 不然会丢失 因为这个定时任务是已经从 scheduledTaskQueue.remove()
+                  if (!taskQueue.offer(scheduledTask)) {
+                           // No space left in the task queue add it back to the scheduledTaskQueue so we pick it up again.
+                           scheduledTaskQueue().add((ScheduledFutureTask<?>) scheduledTask);
+                           return false;
+                       }
+
+        任务的执行
+        NioEventLoop# run() -->runAllTasks(long timeoutNanos)-->Runnable task = pollTask(); 从taskQueue中拿一个任务
+
+        -->safeExecute(task);-->
+
+        if ((runTasks & 0x3F) == 0){
+                                       lastExecutionTime = ScheduledFutureTask.nanoTime();
+                                        if (lastExecutionTime >= deadline) {
+                                            break;
+                                        }
+                                }
+        //每执行64 tasks 检查一次是否超时了 若超时则break 为啥是64个才检查一次  因为nanoTime() is relatively expensive
+
+        inEventLoop() 到底是啥意思?
+
+        为了确保一个Channel的整个生命周期中的I/O事件会被一个EventLoop负责，Netty通过inEventLoop()方法来判断当前执行的线程的身份，
+
+        确定它是否是分配给当前Channel以及它的EventLoop的那一个线程
+
+
+新连接的接入
+    Netty是在哪里检测有新连接接入的？ boss线程轮询accept事件 通过jdk底层的accept方法创建这条连接
+    新连接是怎样注册到NioEventLoop 线程的？boss线程调用   return (EventLoop) super.next(); --> return chooser.next();return executors[idx.getAndIncrement() & executors.length - 1];
+    拿到一个NioEventLoop 并将新连接注册到这个NioEventLoop对应的selector上面
+    1--检测新连接
+        NioEventLoop# processSelectedKeys();--> NioEventLoop#processSelectedKeysOptimized processSelectedKey(k, (AbstractNioChannel) a);
+
+        -- AbstractNioChannel# unsafe.read();  --> AbstractNioChannel#read() -->int localRead = doReadMessages(readBuf)
+
+        -->NioServerSocketChannel#  doReadMessages -->SocketChannel ch = javaChannel().accept(); 获取连接
+
+
+    2--创建NioSocketChannel
+         -->NioServerSocketChannel#  doReadMessages -->NioSocketChannel(this, ch)-->super(parent, socket)
+
+         -->AbstractNioChannel#AbstractNioChannel
+            设置感兴趣的事件为OP_READ
+         this.readInterestOp = readInterestOp;
+            设置模式为非阻塞
+         ch.configureBlocking(false);
+
+         -->NioSocketChannel(this, ch) config = new NioSocketChannelConfig(this, socket.socket());
+
+         -->DefaultSocketChannelConfig# setTcpNoDelay javaSocket.setTcpNoDelay(tcpNoDelay); 设置禁止Nagle算法(disable/enable Nagle's algorithm).
+
+    3--channel的分类
+        服务端:NioServerSocketChannel  extends AbstractNioMessageChannel extends AbstractNioChannel extends AbstractChannel extends DefaultAttributeMap implements Channel
+        NioServerSocketChannel感兴趣的事件是   OP_ACCEPT
+        并且对应的UnSafe 是AbstractNioMessageChannel# return new NioMessageUnsafe();
+        NioMessageUnsafe 的read方法是读取socket连接 --> int localRead = doReadMessages(readBuf)   -->SocketChannel ch = javaChannel().accept();
+        对应的config --> NioServerSocketChannelConfig
+
+
+        客户端:NioSocketChannel extends AbstractNioByteChannel extends AbstractNioChannel  extends AbstractChannel extends DefaultAttributeMap implements Channel
+        NioSocketChannel感兴趣的事件是     OP_READ
+        并且对应的UnSafe 是 AbstractNioByteChannel# return new NioByteUnsafe();
+        NioByteUnsafe  的read方法 是读取数据  byteBuf = allocHandle.allocate(allocator);
+                                             allocHandle.lastBytesRead(doReadBytes(byteBuf));
+         对应的config --> NioSocketChannelConfig
+
+    4--新连接NioEventLoop分配和selector注册
+        在服务端启动时 initAndRegister() bind()-->doBind()-->initAndRegister() -->init()-->pipeline.addLast(new ServerBootstrapAcceptor)
+
+        此时服务端的pipeline Head->ServerBootstrapAcceptor->Tail
+
+        在processSelectedKeys()-->....--> NioServerSocketChannel#  doReadMessages()
+
+        --> pipeline.fireChannelRead(readBuf.get(i)) 从Head往后传播到ServerBootstrapAcceptor 的channelRead方法
+
+                    for (int i = 0; i < size; i ++) {
+                                readPending = false;
+                                pipeline.fireChannelRead(readBuf.get(i));
+                            }
+
+        ServerBootstrapAcceptor#channelRead
+
+        -->child.pipeline().addLast(childHandler); 添加childHandler
+
+        --> 设置options和attrs
+        if (!child.config().setOption((ChannelOption<Object>) e.getKey(), e.getValue()))
+         child.attr((AttributeKey<Object>) e.getKey()).set(e.getValue());
+
+        -->选择NioEventLoop并注册selector
+         ServerBootstrapAcceptor#channelRead# childGroup.register(child).addListener(new ChannelFutureListener()
+
+         -->MultithreadEventLoopGroup# register()--> return next().register(channel);
+
+         -->MultithreadEventLoopGroup#next() -->return chooser.next()
+
+          从EventExecutor[] executors中选出一个 EventExecutor NioEventLoop是 EventExecutor的子类
+         -->DefaultEventExecutorChooserFactory# return executors[idx.getAndIncrement() & executors.length - 1];
+
+        -->SingleThreadEventLoop#register()-->   return register(new DefaultChannelPromise(channel, this));
+
+        -->SingleThreadEventLoop# register()--> promise.channel().unsafe().register(this, promise); promise.channel().unsafe() NioSocketChannel对应的unsafe
+
+        -->AbstractChannel#register()--> AbstractChannel.this.eventLoop = eventLoop;
+
+        --> if (eventLoop.inEventLoop())返回的是false因为是服务端的EventLoop 和客户端的请求的EventLoop是不一样的,客户端的 EventLoop是刚才选择的
+
+        --> 所以执行eventLoop.execute-->AbstractChannel# register0 --> doRegister();-->AbstractNioChannel# doRegister()
+
+        -->selectionKey = javaChannel().register(eventLoop().selector, 0, this); 上面服务端的注册selector也是调用的这个方法
+
+      5--NioSocketChannel 读事件的注册
+        -->AbstractChannel# register0 --> pipeline.fireChannelActive(); -->DefaultChannelPipeline# fireChannelActive()
+
+        -->AbstractChannelHandlerContext# invokeChannelActive-->AbstractChannelHandlerContext# invokeChannelActive()
+
+        --> ((ChannelInboundHandler) handler()).channelActive(this);
+
+        --> DefaultChannelPipeline# channelActive -->ctx.fireChannelActive();  readIfIsAutoRead();
+
+        -->DefaultChannelPipeline read() -->tail.read(); -->AbstractChannelHandlerContext# read()
+
+        -->DefaultChannelPipeline# read() -->unsafe.beginRead();unsafe是NioSocketChannel对应的UnSafe
+
+        -->AbstractChannel# beginRead()--> doBeginRead()
+
+        -->          final int interestOps = selectionKey.interestOps(); //0
+                     if ((interestOps & readInterestOp) == 0) { readInterestOp=1
+                        这里将读事件绑定到selectionKey
+                        readInterestOp是在NioSocketChannel初始化时
+                         -->AbstractNioByteChannel# AbstractNioByteChannel-->super(parent, ch, SelectionKey.OP_READ);
+                         -->AbstractNioChannel#-->AbstractNioChannel() this.readInterestOp = readInterestOp;
+                         selectionKey.interestOps(interestOps | readInterestOp); interestOps | readInterestOp=1
+
+                     }
+
+
