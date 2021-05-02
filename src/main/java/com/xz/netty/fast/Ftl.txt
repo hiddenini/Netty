@@ -1,0 +1,65 @@
+Ftl Ftlt InternalThreadLocalMap
+
+在FastThreadLocalTest1 首先是初始化了一个threadLocal0  此时threadLocal0 中的成员变量index=1 这是个唯一的index
+
+然后new了一个FastThreadLocalThread 在这个线程中调用threadLocal0 set了一个User对象 有三个步骤
+
+1--获取InternalThreadLocalMap
+    InternalThreadLocalMap.get() -->由于我是使用的ftlt 所以进入--> return fastGet((FastThreadLocalThread) thread);
+
+    --> InternalThreadLocalMap threadLocalMap = thread.threadLocalMap(); 由于还未初始化 所以为null
+
+    -->进行初始化  thread.setThreadLocalMap(threadLocalMap = new InternalThreadLocalMap());
+
+    -->初始化InternalThreadLocalMap时 初始化了一个super(newIndexedVariableTable());
+
+    --> Object[] array = new Object[32];   Arrays.fill(array, UNSET); 此时Object[] 所有的对象都是UNSET
+
+2--通过索引set对象
+    上面初始化InternalThreadLocalMap之后回到 set(InternalThreadLocalMap.get(), value);
+
+    -->threadLocalMap.setIndexedVariable(index, value) 这里的index 是最开始创建threadLocal0 的index为1
+
+    -->             //获取到InternalThreadLocalMap中的Object数组
+                    Object[] lookup = indexedVariables;
+                    if (index < lookup.length) {
+                        //保存旧值
+                        Object oldValue = lookup[index];
+                        //设置新的值
+                        lookup[index] = value;
+                        return oldValue == UNSET;
+                    } else {
+                         //扩容
+                        expandIndexedVariableTableAndSet(index, value);
+                        return true;
+                    }
+
+    -->上面的操作结束后 InternalThreadLocalMap 中的Object[]数组的Object[1] 是一个User对象 其他位置都是  UNSET
+
+    -->下面的get方法就是是取出这个位置的User对象
+
+3-- remove(threadLocalMap); 如set的是一个 UNSET就进行remove 这里不重点分析
+
+接下来是threadLocal0.get()
+
+1--获取InternalThreadLocalMap
+    上面已经分析过 在set的时候已经初始化了该线程上的InternalThreadLocalMap 这里直接return
+
+2--通过索引get对象
+    --> Object v = threadLocalMap.indexedVariable(index);
+
+
+    -->  Object[] lookup = indexedVariables;  return index < lookup.length? lookup[index] : UNSET;
+
+    -->这里直接通过index值为1 从indexedVariables上取出set方法set进去的那个User对象
+
+
+
+接下来分析下多个ftl的情况
+
+    threadLocal1 = new FastThreadLocal<Object>();  此时threadLocal1 中的成员变量index=2 这是个唯一的index
+
+    然后threadLocal1.set(new User(23, "xt")); 就是在该ftlt的InternalThreadLocalMap的Object[2]的位置插入一个User对象
+
+    Object o = threadLocal1.get(); get方法就是获取该ftlt的InternalThreadLocalMap的Object[2]的位置的User对象
+

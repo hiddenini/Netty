@@ -353,3 +353,1034 @@ NioEventLoop执行
                      }
 
 
+pipeline
+  netty是如何判断ChannelHandler类型的? instance of
+
+  对于ChannelHandler的添加应该遵循什么样的顺序? inBound事件的传播和添加顺序一致 outBound事件和添加顺序相反
+
+  用户手动触发事件传播,不同的触发方式有什么区别?
+  通过ctx.channel().pipeline().fireChannelRead()去触发会从Head往后或者Tail往前触发
+  inBound事件从Head往后
+  outBound事件从Tail往前
+
+  通过 ctx.fireChannelRead()会从当前节点开始
+  inBound事件从当前节点往后传播直到Tail
+  outBound事件当前节点往前传播直到Head
+
+pipeline的初始化
+    Pipeline在Channel的时候被创建
+
+    Pipeline节点数据结构:ChannelHandlerContext
+
+    Pipeline中的2大哨兵:Head和Tail
+
+1--不管是服务端还是客户端的Channel在初始化时最终都会调用到AbstractChannel#AbstractChannel()--> pipeline = newChannelPipeline();
+
+    --> return new DefaultChannelPipeline(this);-->DefaultChannelPipeline#DefaultChannelPipeline()-->
+
+            this.channel = ObjectUtil.checkNotNull(channel, "channel");
+            succeededFuture = new SucceededChannelFuture(channel, null);
+            voidPromise =  new VoidChannelPromise(channel, true);
+
+            tail = new TailContext(this);
+            head = new HeadContext(this);
+
+            head.next = tail;
+            tail.prev = head;
+
+     -->构成一个双向链表
+
+2--ChannelHandlerContext extends AttributeMap, ChannelInboundInvoker, ChannelOutboundInvoker
+    AbstractChannelHandlerContext implements ChannelHandlerContext
+
+3--TailContext  extends AbstractChannelHandlerContext implements ChannelInboundHandler
+
+    super(pipeline, null, TAIL_NAME, true, false); inboud:true outbound:false
+
+    HeadContext extends AbstractChannelHandlerContext
+                            implements ChannelOutboundHandler, ChannelInboundHandler
+         unsafe = pipeline.channel().unsafe();
+         super(pipeline, null, HEAD_NAME, false, true); inboud:false outbound:true
+
+添加ChannelHandler
+    一般在用户代码中 serverBootstrap.group().childHandler( socketChannel.pipeline().addLast(xxx))
+     -->DefaultChannelPipeline# ChannelPipeline()-->return addLast(null, handlers);
+
+     -->DefaultChannelPipeline#addLast()
+    1--判断是否重复添加
+         checkMultiplicity(handler);
+
+
+    2--创建节点并添加到链表
+       newCtx = newContext(group, filterName(name, handler), handler);
+
+      -->super(pipeline, executor, name, isInbound(handler), isOutbound(handler));
+
+      -->  return new DefaultChannelHandlerContext(this, childExecutor(group), name, handler);
+
+      -->super(pipeline, executor, name, isInbound(handler), isOutbound(handler));
+
+      -->isInbound(handler) -->return handler instanceof ChannelInboundHandler;
+
+       addLast0(newCtx);
+
+      -->双链表的插入操作在tail前面插入一个节点
+                        AbstractChannelHandlerContext prev = tail.prev;
+                        newCtx.prev = prev;
+                        newCtx.next = tail;
+                        prev.next = newCtx;
+                        tail.prev = newCtx;
+
+
+    3--回调添加完成事件
+        一样的套路 先判断  if (!executor.inEventLoop()) 如果不是当前的EventLoop线程 那么包装成一个task丢到队列中
+        否则直接执行  callHandlerAdded0(newCtx);
+
+        callHandlerAdded0(newCtx);-->DefaultChannelPipeline#callHandlerAdded0()
+
+        -->            ctx.handler().handlerAdded(ctx);
+                       //cas设置节点状态为ADD_COMPLETE
+                       ctx.setAddComplete();
+
+        -->ctx.handler().handlerAdded(ctx);-->ChannelInitializer#handlerAdded()-->initChannel(ctx);
+
+        -->ChannelInitializer#initChannel()-->
+            //执行用户自定义的代码  例如NettyServer.class 中的 socketChannel.pipeline().addLast(new ServerHandlerCustomTask());
+            initChannel((C) ctx.channel());
+            //将自身移除 因为自己也是一个ChannelHandler 所以最终的效果是添加了用户自定义的ChannelHandler 自己没有被添加
+            remove(ctx);
+
+删除ChannelHandler
+        -->AuthHandler#channelRead0()-->ctx.pipeline().remove(this);-->remove(getContextOrDie(handler));
+
+    1--找到节点
+        DefaultChannelPipeline# getContextOrDie()-->DefaultChannelPipeline#context -->for (;;) 从head遍历链表找到则返回
+    2--链表的删除
+        DefaultChannelPipeline#remove()--> DefaultChannelPipeline#remove0
+
+        -->双链表的删除操作
+                    AbstractChannelHandlerContext prev = ctx.prev;
+                    AbstractChannelHandlerContext next = ctx.next;
+                    prev.next = next;
+                    next.prev = prev;
+
+    3--回调删除Handler事件
+            一样的套路 先判断  if (!executor.inEventLoop()) 如果不是当前的EventLoop线程 那么包装成一个task丢到队列中
+            否则直接执行    callHandlerRemoved0(ctx);-->  ctx.handler().handlerRemoved(ctx);   ctx.setRemoved();
+
+
+inBound事件的传播
+    何为inBound事件以及ChannelInboundHandler
+
+    ChannelInboundHandler extends ChannelHandler
+
+    ChannelRead事件的传播
+    运行 inBound包下面的server 使用telnet连接服务端
+                                输出   InBoundHandlerB is active
+                                       InBoundHandlerA: hello world
+                                       InBoundHandlerC: hello world
+                                       InBoundHandlerB: hello world
+    在InBoundHandlerB中channelActive-->ctx.channel().pipeline().fireChannelRead("hello world")
+    在调用ctx.channel().pipeline().fireChannelRead()时是从Head节点开始传播
+    在这三个InBoundHandler中的channelRead()-->ctx.fireChannelRead(msg)是从当前节点开始往下传播
+
+    -->InBoundHandlerB#channelActive()->ctx.channel().pipeline().fireChannelRead("hello world");
+
+    -->DefaultChannelPipeline# fireChannelRead AbstractChannelHandlerContext.invokeChannelRead(head, msg);
+
+    -->AbstractChannelHandlerContext# invokeChannelRead-->next.invokeChannelRead(m); next是头节点 HeadContext
+
+    -->AbstractChannelHandlerContext# invokeChannelRead -->DefaultChannelPipeline# channelRead-->ctx.fireChannelRead(msg);
+
+    -->AbstractChannelHandlerContext# fireChannelRead-->invokeChannelRead(findContextInbound(), msg);
+
+   -->AbstractChannelHandlerContext# findContextInbound()-->     遍历链表找到下一个inboundHandler InBoundHandlerA
+                                                                    do {
+                                                                        ctx = ctx.next;
+                                                                    } while (!ctx.inbound);
+                                                                    return ctx;
+    -->找到InBoundHandlerA之后继续执行invokeChannelRead(findContextInbound(), msg);
+
+    --> AbstractChannelHandlerContext# invokeChannelRead-->next.invokeChannelRead(m);
+
+    -->AbstractChannelHandlerContext#invokeChannelRead--> ((ChannelInboundHandler) handler()).channelRead(this, msg);
+
+    -->InBoundHandlerA# channelRead()--> System.out.println("InBoundHandlerA: " + msg); ctx.fireChannelRead(msg);A执行完输出继续往下传播
+
+    --> AbstractChannelHandlerContext# fireChannelRead-->invokeChannelRead(findContextInbound(), msg) 重复上面的操作 找到B
+
+    -->C 输出 -->继续往下传播找到B -->B 输出 -->继续往下传播找到 TailContext-->DefaultChannelPipeline# channelRead -->onUnhandledInboundMessage(msg);
+
+    -> ReferenceCountUtil.release(msg); 释放内存
+
+    SimpleInBoundHandler处理器 可以自动释放内存
+    SimpleInBoundHandler-->channelRead
+
+    finally {
+                if (autoRelease && release) {
+                    //最后一定会释放
+                    ReferenceCountUtil.release(msg);
+                }
+
+
+outBound事件的传播
+
+    何为outBound事件以及ChannelOutboundHandler
+    outBound事件通常是用户主动发起的动作 比如读 写
+    ChannelOutboundHandler extends ChannelHandler
+
+    write事件的传播
+
+    outBound传播的顺序是和在pipeline中顺序相反的
+    ctx.channel().write()是从tail开始往前传播直到head
+    ctx.write()是从当前节点往前传播
+
+    -->OutBoundHandlerB #handlerAdded()--> ctx.channel().write("hello world")--AbstractChannel#  write()-->return pipeline.write(msg);
+
+    --> DefaultChannelPipeline# write()-->return tail.write(msg);-->AbstractChannelHandlerContext# write()-->return write(msg, newPromise());
+
+    111-->AbstractChannelHandlerContext#write()-->write(msg, false, promise);
+
+    -->AbstractChannelHandlerContext# write(Object msg, boolean flush, ChannelPromise promise)-->AbstractChannelHandlerContext next = findContextOutbound();
+
+    -->findContextOutbound()-->从tail往前遍历找到outbound节点返回 找到的是OutBoundHandlerB
+                                        do {
+                                            ctx = ctx.prev;
+                                        } while (!ctx.outbound);
+                                        return ctx;
+
+    -->AbstractChannelHandlerContext# write(Object msg, boolean flush, ChannelPromise promise) -->next.invokeWrite(m, promise);
+
+    -->AbstractChannelHandlerContext#invokeWrite(Object msg, ChannelPromise promise)-->invokeWrite0(msg, promise);
+
+    -->((ChannelOutboundHandler) handler()).write(this, msg, promise);
+
+    -->OutBoundHandlerB#write()-->        System.out.println("OutBoundHandlerB: " + msg);
+                                          ctx.write(msg, promise);
+
+    -->回到上面的111 重复操作 找到C-->执行C的输出 然后C继续往前传播-->又回到上面的111 重复操作 找到A
+
+    -->回到上面的111 重复操作 找到HeadContext -->DefaultChannelPipeline#write()--> unsafe.write(msg, promise);
+
+异常传播
+    异常的触发链
+    异常是从当前节点往后一直传播 不管是in还是out节点都会传播直到TailContext tail会输出异常
+
+    -->InBoundHandlerB#channelRead()-->throw new BusinessException("from InBoundHandlerB");
+
+    --> AbstractChannelHandlerContext# invokeChannelRead()-->notifyHandlerException(t);
+
+    -->AbstractChannelHandlerContext# notifyHandlerException()-->invokeExceptionCaught(cause);
+
+    --AbstractChannelHandlerContext#invokeExceptionCaught()-->handler().exceptionCaught(this, cause); handler()是当前节点 InBoundHandlerB
+
+    -->InBoundHandlerB#exceptionCaught()-->        B输出 向后传播
+                                                    System.out.println("InBoundHandlerB.exceptionCaught()");输出
+
+                                                   ctx.fireExceptionCaught(cause); 向后传播
+
+    222-->AbstractChannelHandlerContext#fireExceptionCaught(final Throwable cause)-->invokeExceptionCaught(next, cause);
+
+    -->AbstractChannelHandlerContext# invokeExceptionCaught()-->next.invokeExceptionCaught(cause); next是InBoundHandlerC
+
+    -->AbstractChannelHandlerContext#invokeExceptionCaught()-->handler().exceptionCaught(this, cause);
+
+    -->InBoundHandlerC# exceptionCaught()--> C 输出 向后传播
+
+                                                        System.out.println("InBoundHandlerC.exceptionCaught()");
+
+                                                        ctx.fireExceptionCaught(cause);
+     -->重复222 找到后续的三个节点 最后找到TailContext
+
+     -->TailContext# exceptionCaught()--> onUnhandledInboundException(cause); -->ReferenceCountUtil.release(cause);
+
+
+    异常处理的最佳实践
+    在链表最后添加一个异常处理器处理所有异常-->ch.pipeline().addLast(new ExceptionCaughtHandler())
+
+
+Netty的内存分配ByteBuf
+    内存的类别有哪些? Unsafe safe
+                     UnPool pool
+                     heap direct
+
+    如何减少多线程内存分配之间的竞争?
+                    参考PooledByteBufAllocator结构.jpg
+
+    不同大小的内存是如何进行分配的?
+                    tiny small ....
+
+ByteBuf的结构和重要api
+    read write set
+
+    mark reset
+
+    readableBytes
+
+    writeableBytes
+
+    maxWriteableBytes
+
+ByteBuf分类
+    AbstractByteBuf extends ByteBuf 定义骨架 具体的read write get方法交给子类去实现 这个类只移动指针
+
+    1--pooled和UnPooled  pooled预先分配好 UnPooled直接从操作系统分配
+
+    2--Unsafe和非Unsafe  Unsafe可以直接拿到byteBuf在jvm的内存地址调用jdk的unsafe进行读写 非Unsafe不会依赖到jdk底层的unsafe
+
+    PooledUnsafeHeapByteBuf#_getByte()-->return UnsafeByteBufUtil.getByte(memory, idx(index));
+
+    -->UnsafeByteBufUtil#  getByte()-->return PlatformDependent.getByte(array, index);
+
+    --> PlatformDependent# getByte()--> return PlatformDependent0.getByte(data, index);
+
+    -->PlatformDependent0# getByte()--> return UNSAFE.getByte(data, BYTE_ARRAY_BASE_OFFSET + index); UNSAFE jdk底层的unsafe
+
+    PooledHeapByteBuf#getBytes()-->return HeapByteBufUtil.getByte(memory, idx(index));--> return memory[index];
+
+    3--Heap和Direct
+      Heap是直接在堆上进行内存分配需要被gc管理 不需要手动进行释放
+      Direct是调用jdk的api进行内存分配不受jvm控制 不会参与到gc 需要自己手动进行释放
+
+    UnpooledHeapByteBuf 依赖byte[] array;
+
+    -->UnpooledHeapByteBuf#_getByte()-->HeapByteBufUtil.getByte(array, index);
+
+     UnpooledDirectByteBuf 依赖 ByteBuffer buffer;
+    -->UnpooledDirectByteBuf#_getByte()--> return buffer.get(index); 这里的buffer是依赖jdk底层生成的DirectByteBuffer
+
+ByteBufAllocator 实现Heap和Direct这个维度
+    AbstractByteBufAllocator implements ByteBufAllocator 实现ByteBufAllocator的大部分功能
+
+    预留抽象接口 protected abstract ByteBuf newDirectBuffer() 留给子类去实现pooled和UnPooled 这个维度
+
+                 protected abstract ByteBuf newHeapBuffer()
+
+ Unsafe和非Unsafe这个维度是自动判别的 拿得到就拿
+    UnpooledByteBufAllocator# newHeapBuffer()
+
+    -->
+        return PlatformDependent.hasUnsafe() ? new UnpooledUnsafeHeapByteBuf(this, initialCapacity, maxCapacity)
+                    : new UnpooledHeapByteBuf(this, initialCapacity, maxCapacity);
+
+
+UnpooledByteBufAllocator分析
+
+    heap内存的分配
+
+    ->UnpooledByteBufAllocator#     newHeapBuffer()-->new UnpooledUnsafeHeapByteBuf(this, initialCapacity, maxCapacity)
+
+    -->super(alloc, initialCapacity, maxCapacity);UnpooledHeapByteBuf#UnpooledHeapByteBuf()this(alloc, new byte[initialCapacity], 0, 0, maxCapacity);
+
+    --> new byte[initialCapacity] 说明是直接创建了一个byte数组
+
+    --> setArray(initialArray)         setIndex(readerIndex, writerIndex); 设置读写指针
+
+    -->UnpooledHeapByteBuf# setArray()-->array = initialArray;保存byte数组
+
+     new UnpooledHeapByteBuf(this, initialCapacity, maxCapacity)使用的构造函数和上面一样 但是他们的区别在上面Unsafe和非Unsafe
+
+     已经提到过了 就是get的时候一个是使用的jdk的unsafe通过数组在内存中的偏移地址和index取的   一个是直接从数组中根据index取的
+
+    direct内存的分配
+      UnpooledByteBufAllocator#   newDirectBuffer()--> new UnpooledDirectByteBuf(this, initialCapacity, maxCapacity)
+
+      -->UnpooledDirectByteBuf#     UnpooledDirectByteBuf()-->setByteBuffer(ByteBuffer.allocateDirect(initialCapacity));
+
+      --> ByteBuffer.allocateDirect(initialCapacity) -->java.nio ByteBuffer# allocateDirect() -->return new DirectByteBuffer(capacity);
+
+       UnpooledDirectByteBuf的get -->  return buffer.get(index);;-->  return ((unsafe.getByte(ix(checkIndex(i)))));
+
+         UnsafeByteBufUtil.newUnsafeDirectByteBuf(this, initialCapacity, maxCapacity) :
+
+      -->UnsafeByteBufUtil#     newUnsafeDirectByteBuf()--> return new UnpooledUnsafeDirectByteBuf(alloc, initialCapacity, maxCapacity);
+
+      --> UnpooledUnsafeDirectByteBuf# UnpooledUnsafeDirectByteBuf()-->setByteBuffer(allocateDirect(initialCapacity), false);
+
+      --> UnpooledUnsafeDirectByteBuf# allocateDirect() -->return ByteBuffer.allocateDirect(initialCapacity);
+
+      --> java.nio.ByteBuffer #allocateDirect()   return new DirectByteBuffer(capacity);返回jdk底层创建的DirectByteBuffer
+
+      --> UnpooledUnsafe#  setByteBuffer()-->
+                        这里通过unsafe获取到buffer在内存中地址保存在memoryAddress中 后续UnpooledUnsafe get的时候也是通过这个地址
+                          -->  UnpooledUnsafeDirectByteBuf#  _getByte()--> return UnsafeByteBufUtil.getByte(addr(index));
+                          -->addr(index)-->  return memoryAddress + index;
+                        memoryAddress = PlatformDependent.directBufferAddress(buffer);
+
+      -->  return PlatformDependent0.directBufferAddress(buffer);-->return getLong(buffer, ADDRESS_FIELD_OFFSET);
+
+      --> return UNSAFE.getLong(object, fieldOffset);
+
+
+PooledByteBufAllocator分析
+    PooledByteBufAllocator# newDirectBuffer()-->
+
+    拿到线程局部缓存PoolThreadCache
+
+    在线程局部缓存的Area上进行内存分配
+
+    --> PoolThreadCache cache = threadCache.get();         PoolArena<ByteBuffer> directArena = cache.directArena;
+
+    -->参考res中的PooledByteBufAllocator结构
+
+directArena分配direct内存的流程
+    -->PooledByteBufAllocator#   newDirectBuffer()-->buf = directArena.allocate(cache, initialCapacity, maxCapacity);
+
+    ->   PooledByteBuf<T> buf = newByteBuf(maxCapacity); allocate(cache, buf, reqCapacity);
+
+    -->newByteBuf(maxCapacity)-->PoolArena#  newByteBuf()-->return PooledUnsafeDirectByteBuf.newInstance(maxCapacity);
+
+    -->PooledUnsafeDirectByteBuf#  newInstance() -->PooledUnsafeDirectByteBuf buf = RECYCLER.get();RECYCLER 缓存池   buf.reuse(maxCapacity);
+
+    -> allocate(cache, buf, reqCapacity);-->cache.allocateTiny()在缓存上进行分配 如果失败则  table = tinySubpagePools;在内存堆里进行分配
+
+
+内存规则介绍 参考 res中的内存规格介绍
+
+缓存数据结构
+        MemoryRegionCache
+
+        每一个线程拥有一个PoolThreadCache 就是一个ThreadLocal
+
+        在PoolThreadCache中有6个成员变量 3个heap相关的MemoryRegionCache数组      3个direct相关MemoryRegionCache数组
+                private final MemoryRegionCache<byte[]>[] tinySubPageHeapCaches;
+                private final MemoryRegionCache<byte[]>[] smallSubPageHeapCaches;
+                private final MemoryRegionCache<byte[]>[] normalHeapCaches;
+
+                private final MemoryRegionCache<ByteBuffer>[] tinySubPageDirectCaches;
+                private final MemoryRegionCache<ByteBuffer>[] smallSubPageDirectCaches;
+                private final MemoryRegionCache<ByteBuffer>[] normalDirectCaches;
+
+        以tinySubPageDirectCaches为例 是在PoolThreadCache#PoolThreadCache()构造方法中实例化的
+          tinySubPageDirectCaches = createSubPageCaches(
+                    tinyCacheSize, PoolArena.numTinySubpagePools, SizeClass.Tiny);
+
+                    tinyCacheSize=512   PoolArena.numTinySubpagePools=521>>4=32
+
+           --> PoolThreadCache# createSubPageCaches() MemoryRegionCache<T>[] cache = new MemoryRegionCache[numCaches]; numCaches=32
+            创建了一个长度为32的MemoryRegionCache数组
+
+           -->cache[i] = new SubPageMemoryRegionCache<T>(cacheSize, sizeClass);-->super(size, sizeClass);
+
+           -->           this.size = MathUtil.safeFindNextPositivePowerOfTwo(size);
+                          queue = PlatformDependent.newFixedMpscQueue(this.size);
+
+           也就是说tinySubPageDirectCaches是一个长度为32的MemoryRegionCache 数组 每一个节点表示一种规则大小
+
+           每一个MemoryRegionCache是一个SubPageMemoryRegionCache
+
+           而一个SubPageMemoryRegionCache 拥有一个长度为512的queue
+
+           smallSubPageDirectCaches和tinySubPageDirectCaches类似是一个长度为4的MemoryRegionCache
+
+           而一个SubPageMemoryRegionCache 拥有一个长度为256的queue
+
+           normalDirectCaches和tinySubPageDirectCaches类似是一个长度为3的MemoryRegionCache
+
+           而一个SubPageMemoryRegionCache 拥有一个长度为64的queue
+
+
+命中缓存的分配流程
+    PoolArena# allocate()-->先对reqCapacity做一些处理 然后判断下是属于哪种规则 下面以tiny为例   <512B
+
+    --> cache.allocateTiny(this, buf, reqCapacity, normCapacity)
+
+    -->   return allocate(cacheForTiny(area, normCapacity), buf, reqCapacity);
+
+    -->cacheForTiny(area, normCapacity)--> int idx = PoolArena.tinyIdx(normCapacity);
+
+    -->   return normCapacity >>> 4; 因为tiny对应的是一个长度为32的MemoryRegionCache
+    从下标0开始 是 0 16 32 48 ....以16的倍数为规格的 SubPageMemoryRegionCache
+
+    一个SubPageMemoryRegionCache 拥有一个长度为512的queue
+
+    所以normCapacity >>> 4 就得到了这个normCapacity对应的下标比如normCapacity=32
+
+    那么index=2 也就是取到的是MemoryRegionCache[2] 这是一个SubPageMemoryRegionCache
+
+    这个SubPageMemoryRegionCache对应的大小是32B 有512个这样大小的queue
+
+    -->    return cache(tinySubPageDirectCaches, idx); -->   return cache[idx];
+
+    -->拿到对应的缓存之后 回到 return allocate(cacheForTiny(area, normCapacity), buf, reqCapacity);
+
+    --> PoolThreadCache# allocate()-->boolean allocated = cache.allocate(buf, reqCapacity);
+
+    --> Entry<T> entry = queue.poll();--> initBuf(entry.chunk, entry.handle, buf, reqCapacity); 初始化
+
+    --> PoolThreadCache # SubPageMemoryRegionCache#  initBuf()--> chunk.initBufWithSubpage(buf, handle, reqCapacity);
+
+    -->PoolChunk# initBufWithSubpage()initBufWithSubpage(buf, handle, bitmapIdx(handle), reqCapacity);
+
+    -->        buf.init(
+                   this, handle,
+                   runOffset(memoryMapIdx) + (bitmapIdx & 0x3FFFFFFF) * subpage.elemSize, reqCapacity, subpage.elemSize,
+                   arena.parent.threadCache());
+
+     -->super.init(chunk, handle, offset, length, maxLength, cache);
+
+     -->PooledByteBuf# init()         this.chunk = chunk; 在哪一个chunk上面的哪个地方(handle)
+                                      this.handle = handle;
+
+
+    --> PoolThreadCache #   allocate()  在初始化完成后initBuf(entry.chunk, entry.handle, buf, reqCapacity);
+
+    --> entry.recycle();    -->                     void recycle() {
+                                                        chunk = null;
+                                                        handle = -1;
+                                                        recyclerHandle.recycle(this);
+                                                    }
+
+    -->Recycler#  recycle()--> stack.push(this); 为了尽可能做到对象的服用 通过对象池减少对象的重复创建和销毁
+
+PoolThreadCache
+    上面描述了PoolThreadCache中关于缓存部分在PoolThreadCache 还有一部分是
+
+        final PoolArena<byte[]> heapArena;
+        final PoolArena<ByteBuffer> directArena; Arena 竞技场 开辟一块内存
+
+    看下PoolSubpage-->
+                        private final PoolChunkList<T> q050;
+                        private final PoolChunkList<T> q025;
+                        private final PoolChunkList<T> q000;
+                        private final PoolChunkList<T> qInit;
+                        private final PoolChunkList<T> q075;
+                        private final PoolChunkList<T> q100;
+
+    以q050为例(每一个都代表着不同使用率的ChunkList 形成双链表)minUsage为 50 maxUsage为 100
+     --> q050 = new PoolChunkList<T>(q075, 50, 100, chunkSize);
+            双链表操作
+            q100.prevList(q075);
+            q075.prevList(q050);
+            q050.prevList(q025);
+            q025.prevList(q000);
+            q000.prevList(null);
+            qInit.prevList(qInit);
+
+     Netty会把一个chunk按照8k(page)的大小分配   一个8k的page分为4个 2k的大小称为subpage
+
+     PoolSubpage-->  final PoolChunk<T> chunk;记录这个PoolSubpage属于哪个PoolChunk
+                     PoolSubpage<T> prev; 说明一个chun里面的PoolSubpage也是用双向链表连接的
+                     PoolSubpage<T> next;
+
+     page级别的内存分配: allocateNormal()  通过类似二叉树的结构去定位
+
+     PoolArena# allocate()--> allocateNormal(buf, reqCapacity, normCapacity);
+
+     -->现在现有的chunk上面进行分配
+           if (q050.allocate(buf, reqCapacity, normCapacity)
+
+      -->从head开始  long handle = cur.allocate(normCapacity);
+
+      -->如果分配成功      cur.initBuf(buf, handle, reqCapacity);
+
+
+     --> 如果没有则创建一个chunk进行分配
+
+     -->   PoolChunk<T> c = newChunk(pageSize, maxOrder, pageShifts, chunkSize);
+
+     pageSize 8192(8k) maxOrder: 11 pageShifts:13 chunkSize:16777216 16M
+
+     -->PoolArena#newChunk()           return new PoolChunk<ByteBuffer>(
+                                     this, allocateDirect(chunkSize),
+                                     pageSize, maxOrder, pageShifts, chunkSize);
+
+      --> allocateDirect(chunkSize)-->调用jdk底层返回一个bytebuf
+
+      --> PoolChunk(PoolArena<T> arena, T memory, int pageSize, int maxOrder, int pageShifts, int chunkSize) {
+        ...
+
+        memoryMap = new byte[maxSubpageAllocs << 1];    4096
+        depthMap = new byte[memoryMap.length];  4096
+
+        ...
+        ....
+      }
+
+      -->       参考2重for
+                for (int d = 0; d <= maxOrder; ++ d) { // move down the tree one level at a time
+                         int depth = 1 << d;
+                         for (int p = 0; p < depth; ++ p) {
+                             // in each level traverse left to right and set value to the depth of subtree
+                             memoryMap[memoryMapIndex] = (byte) d;
+                             depthMap[memoryMapIndex] = (byte) d;
+                             memoryMapIndex ++;
+                         }
+                     }
+
+     --> long handle = c.allocate(normCapacity); 拿到chunk对应的handle
+
+     --> return allocateRun(normCapacity);-->  int d = maxOrder - (log2(normCapacity) - pageShifts); 算出层数
+
+     -->  int id = allocateNode(d);--> byte value = value(id);
+
+     --> setValue(id, unusable); // mark as unusable 设置为不可用
+
+       -->        updateParentsAlloc(id); 往上层标记 如果使用了0~16k 那么需要标记上层的0~4M 0~8M
+
+     -->  c.initBuf(buf, handle, reqCapacity);
+
+     -->            buf.init(this, handle, runOffset(memoryMapIdx), reqCapacity, runLength(memoryMapIdx),
+                             arena.parent.threadCache());
+
+     -->PooledByteBuf# init() -->      this.chunk = chunk;
+                                        this.handle = handle;
+
+subpage级别的内存分配 allocateTiny() 通过位图的方式去定位
+    --> PoolArena# allocate()-->tableIdx = tinyIdx(normCapacity); -->  return normCapacity >>> 4;
+
+    --> table = tinySubpagePools; tinySubpagePools  PoolSubpage[32] 类似MemoryRegionCache
+
+    --> allocateNormal(buf, reqCapacity, normCapacity);-->PoolChunk#  allocate()-->return allocateSubpage(normCapacity);
+
+    -->subpage = new PoolSubpage<T>(head, this, id, runOffset(id), pageSize, normCapacity); 初始化一个subPage
+
+    --> init(head, elemSize);--> maxNumElems = numAvail = pageSize / elemSize; pageSize=8192 elemSize=16
+
+    -->初始化bitmap    bitmapLength=8
+                for (int i = 0; i < bitmapLength; i ++) {
+                       bitmap[i] = 0;
+                   }
+
+    -->  addToPool(head); 添加到双链表
+
+    -->PoolChunk#  allocateSubpage()-->return subpage.allocate();
+
+    -->PoolSubpage# allocate()-->从512个maxNumElems 找一个未使用的 并且将bitmap中的位置置为1
+
+    --> return toHandle(bitmapIdx); 参考handle的构成
+
+    --> c.initBuf(buf, handle, reqCapacity);-->  initBufWithSubpage(buf, handle, bitmapIdx, reqCapacity);
+
+    -->runOffset(memoryMapIdx) page的偏移 (bitmapIdx & 0x3FFFFFFF) * subpage.elemSize subPage的偏移 得到整个内存的偏移
+           buf.init(
+                   this, handle,
+                   runOffset(memoryMapIdx) + (bitmapIdx & 0x3FFFFFFF) * subpage.elemSize, reqCapacity, subpage.elemSize,
+                   arena.parent.threadCache());
+
+
+ByteBuf的释放 参考byteBuf的释放.jpg
+
+
+Netty的解码器
+    解码器的抽象解码过程
+
+    Netty里面有哪些开箱即用的解码器
+
+ByteToMessageDecoder
+解码步骤
+
+    累加字节流
+    ByteToMessageDecoder extends ChannelInboundHandlerAdapter# channelRead()-->如果不是ByteBuf 直接向下传播  ctx.fireChannelRead(msg);
+
+     -->if (msg instanceof ByteBuf) -->  如果是第一次则将data赋值给cumulation 否则使用cumulator就进行累加
+                                                        first = cumulation == null;
+                                                       if (first) {
+                                                           cumulation = data;
+                                                       } else {
+                                                           cumulation = cumulator.cumulate(ctx.alloc(), cumulation, data);
+                                                       }
+      --> cumulation = cumulator.cumulate(ctx.alloc(), cumulation, data);
+
+      -->Cumulator#cumulate()-->如果累加器的空间不足 或者refCnt is greater then 1 则进行扩容buffer = expandCumulation(alloc, cumulation, in.readableBytes());
+
+      -->否则直接  buffer.writeBytes(in);
+
+
+       调用子类的decode方法
+      --> callDecode(ctx, cumulation, out); -->while(in.isReadable()){}
+
+      -->处理下out中的旧数据 out是一个arrayList 解码后的消息会放在这里list里面-->
+
+       获取下 oldInputLength 然后调用子类的decode方法
+                                                       int oldInputLength = in.readableBytes();
+                                                       decode(ctx, in, out);
+      -->如果子类解析之后发现out的长度没有变化有2种情况
+      1--if (oldInputLength == in.readableBytes()) 并没有in中读取数据 可能是in中的数据不够一个数据包 那么break 继续累加一点数据
+                            if (outSize == out.size()) {
+                                if (oldInputLength == in.readableBytes()) {
+                                    break;
+                                } else {
+                                    continue;
+                                }
+                            }
+      2--否则说明读取了一点数据 但是还没有decode出一个message 那么继续while循环
+
+      --> 如果没有从in中读取数据但是out却发生了变化 那么抛出异常 if (oldInputLength == in.readableBytes())
+
+
+      将解析到的ByteBuf向下传播
+      在finally中
+                      int size = out.size();记录out的size
+                      decodeWasNull = !out.insertSinceRecycled();
+                      fireChannelRead(ctx, out, size); 向下传播
+                      out.recycle();对象池
+
+      -->  fireChannelRead(ctx, out, size);-->ctx.fireChannelRead(msgs.getUnsafe(i)); 从out中拿出所有的解码后的消息
+
+
+  基于固定长度解码器分析
+    FixedLengthFrameDecoder
+    --> A | BC | DEFG | HI      and     frameLength=3 then you get      | ABC | DEF | GHI |
+    如果in中的数据少于frameLength 那么对应于父类中的 break
+        if (in.readableBytes() < frameLength) {
+            return null;
+        } else {
+        //否则截取frameLength长度的数据
+            return in.readRetainedSlice(frameLength);
+        }
+
+   基于行解码器分析
+    LineBasedFrameDecoder# decode()-->
+
+    --> final int eol = findEndOfLine(buffer); Returns the index in the buffer of the end of line found
+
+    -->非丢弃模式 if (!discarding)
+
+    -->if (eol >= 0) 如果找到换行符 if (length > maxLength) 如果长度大于max 那么将 readerIndex指向下一个可读的地方
+
+    -->buffer.readerIndex(eol + delimLength);  然后 抛出异常fail(ctx, length);
+
+    -->if (stripDelimiter) 判断是否需要跳过分隔符
+
+    -->如果没有找到换行符
+
+    -->if (length > maxLength) 如果长度大于max 那么进入丢弃模式        buffer.readerIndex(buffer.writerIndex());
+                                                                      discarding = true;
+
+   丢弃模式(直接丢弃 不会返回数据包)
+   -->if (eol >= 0) 如果找到换行符 -->   buffer.readerIndex(eol + delimLength);    discarding = false;
+
+   -->否则   discardedBytes += buffer.readableBytes();
+
+
+基于分隔符的解码器分析
+    DelimiterBasedFrameDecoder
+    -->如果分隔符是换行符 则使用行解码器
+
+    -->如果分割符是换行符 那么初始化时就初始化一个lineBasedDecoder
+
+               if (lineBasedDecoder != null) {
+                   return lineBasedDecoder.decode(ctx, buffer);
+               }
+
+    -->找到最小分隔符
+
+            -> for (ByteBuf delim: delimiters){
+            }
+
+     允许传入多个分隔符 那么找到可以分割出最小子串的那个分隔符
+
+    例如 xxxxxxxxxAxxxxB A和B都是分割符 那么找到A
+
+    -->和行解码器类似 丢弃模式 非丢弃模式 找到分隔符 没有找到分隔符 是否大于最大长度
+
+基于长度域的解码器
+    LengthFieldBasedFrameDecoder
+
+    -->lengthFieldOffset 表示数据包的哪一位开始是长度域
+
+    -->lengthFieldLength 表示长度域有几位
+
+    -->lengthAdjustment 上面算出长度 比如12个字节 再加上lengthAdjustment
+
+    -->initialBytesToStrip 获取出数据包之后是否需要跳过前面的initialBytesToStrip 个字节
+
+     * <b>lengthFieldOffset</b>   = <b>0</b>
+     * <b>lengthFieldLength</b>   = <b>2</b>
+     * lengthAdjustment    = 0
+     * initialBytesToStrip = 0 (= do not strip header)
+     *
+     * BEFORE DECODE (14 bytes)         AFTER DECODE (14 bytes)
+     * +--------+----------------+      +--------+----------------+
+     * | Length | Actual Content |----->| Length | Actual Content |
+     * | 0x000C | "HELLO, WORLD" |      | 0x000C | "HELLO, WORLD" |
+     * +--------+----------------+      +--------+----------------+
+      000C=12 表示后面12个字节代表的数据 HELLO, WORLD
+
+    计算需要抽取的数据的长度 lengthFieldEndOffset = lengthFieldOffset + lengthFieldLength;
+
+    //如果当前的数据不够lengthFieldEndOffset 那么返回null 父类中会继续读直到够
+     if (in.readableBytes() < lengthFieldEndOffset) {
+                return null;
+     }
+     --> int actualLengthFieldOffset = in.readerIndex() + lengthFieldOffset; 算出这次读真正的lengthFieldOffset的位置
+
+     --> long frameLength = getUnadjustedFrameLength(in, actualLengthFieldOffset, lengthFieldLength, byteOrder); 读数据
+
+     -->frameLength += lengthAdjustment + lengthFieldEndOffset; 需要抽取的长度
+
+     --> 如果当前的数据不够frameLengthInt 那么返回null 父类中会继续读直到够
+             if (in.readableBytes() < frameLengthInt) {
+                     return null;
+                 }
+
+     跳过字节逻辑处理
+     initialBytesToStrip  the number of first bytes to strip out from the decoded frame  需要跳过的字节数 从readerIndex开始跳过
+
+     --> in.skipBytes(initialBytesToStrip);
+
+     -->ByteBuf frame = extractFrame(ctx, in, readerIndex, actualFrameLength); 抽取数据
+
+     --> if (discardingTooLongFrame) 丢弃模式
+
+     --> if (frameLength > maxFrameLength)  discardingTooLongFrame = true;
+
+     -->failIfNecessary(true); if (bytesToDiscard == 0) { discardingTooLongFrame = false;}
+
+
+netty编码
+    如何把java对象变成字节流写入到socket底层?
+    下面的这些过程...
+
+    writeAndFlush
+    -->BizHandler#channelRead()--> ctx.channel().writeAndFlush(user); -->AbstractChannel#writeAndFlush()-->return pipeline.writeAndFlush(msg);
+
+    -->DefaultChannelPipeline#  writeAndFlush()--> return tail.writeAndFlush(msg);-->........
+
+    --> AbstractChannelHandlerContext# invokeWriteAndFlush()-->           invokeWrite0(msg, promise);
+                                                                          invokeFlush0();
+
+     -->匹配对象看下是否可以处理 acceptOutboundMessage(msg) 可以则处理 否则往前拆传播  ctx.write(msg, promise);
+
+     -->分配内存  buf = allocateBuffer(ctx, cast, preferDirect);
+
+     -->调用子类的方法 encode(ctx, cast, buf);
+
+     -->Encoder# encode()-->        byte[] bytes = user.getName().getBytes();
+                                    out.writeInt(4 + bytes.length);
+                                    out.writeInt(user.getAge());
+                                    out.writeBytes(bytes);
+
+    -->finally {        释放对象
+                           ReferenceCountUtil.release(cast);
+                       }
+
+    --> 传播数据               if (buf.isReadable()) {
+                                    ctx.write(buf, promise);
+                                 }
+
+     -->接下来一般是往前传递到Head节点(除非还有handler实现了write方法)
+
+     --> ctx.write(buf, promise); -->HeadContext#  write()-->unsafe.write(msg, promise);
+
+     -->  msg = filterOutboundMessage(msg); 将byteBuffer direct化 转化为direct buffer
+
+     --> outboundBuffer.addMessage(msg, size, promise); 将msg插入到outboundBuffer中
+
+     -->ChannelOutboundBuffer#  addMessage()--> 参考第一次调用write方法.jpg和第N次调用write方法.jpg
+
+     --> incrementPendingOutboundBytes(size, false); 设置写状态
+
+     -->        if (newWriteBufferSize > channel.config().getWriteBufferHighWaterMark()) {  64 * 1024  默认的缓冲区大小是64
+                    //超过64字节则设置setUnwritable 设置不可写
+                    setUnwritable(invokeLater);
+                }
+
+     -->flush
+
+     -->HeadContext#  flush()--> unsafe.flush();
+
+     --> AbstractChannel     flush()-->      outboundBuffer.addFlush();  flush0();
+
+     -->        Entry entry = unflushedEntry;    flushedEntry = entry; 将flushedEntry指针指向第一个unflushedEntry
+
+     -->            do {
+                        flushed ++;
+                        if (!entry.promise.setUncancellable()) {
+                            // Was cancelled so make sure we free up memory and notify about the freed bytes
+                            int pending = entry.cancel();
+                            如果缓冲区的数据带大小小于32则设置可写 和上面设置为不可写对应
+                            decrementPendingOutboundBytes(pending, false, true);
+                        }
+                        entry = entry.next;
+                    } while (entry != null);
+
+    -->回到  flush0();--> AbstractChannel   flush0()-->doWrite(outboundBuffer);
+
+    --> Object msg = in.current();-->          Entry entry = flushedEntry;      return entry.msg;
+
+    -->AbstractNioByteChannel#  doWrite()-->if (msg instanceof ByteBuf) 如果ByteBuf
+
+    --> writeSpinCount = config().getWriteSpinCount(); 获取一个a spin lock  The default value is {@code 16}.
+
+
+                                           调用jdk底层api进行自旋写
+    -->NioSocketChannel# doWriteBytes()--->return buf.readBytes(javaChannel(), expectedWrittenBytes);
+
+    -->PooledDirectByteBuf#         readBytes()-->  int readBytes = getBytes(readerIndex, out, length, true);
+
+    -->  tmpBuf = internalNioBuffer(); -->tmpBuf.clear().position(index).limit(index + length);
+
+    -->java.nio.channels  WritableByteChannel#    write()-->out.write(tmpBuf);
+
+    -->回到AbstractNioByteChannel#  doWrite()  flushedAmount += localFlushedAmount; 累加向jdk底层socket写了多少数据
+
+    -->如果全部写完则break
+                        if (!buf.isReadable()) {
+                            done = true;
+                            break;
+                        }
+
+     -->   in.remove();-->  removeEntry(e);-->flushedEntry在链表上往后移动 直到全部结束
+                                                               if (-- flushed == 0) {
+                                                                   // processed everything
+                                                                   flushedEntry = null;
+                                                                   if (e == tailEntry) {
+                                                                       tailEntry = null;
+                                                                       unflushedEntry = null;
+                                                                   }
+                                                               } else {
+                                                                   flushedEntry = e.next;
+                                                               }
+
+
+
+
+Netty两大性能优化工具类
+    FastThreadLocal
+
+    --> FastThreadLocal#    FastThreadLocal()-->index = InternalThreadLocalMap.nextVariableIndex();
+
+    -->  int index = nextIndex.getAndIncrement(); index 每个FastThreadLocal唯一的标识
+
+    get
+
+    获取ThreadLocalMap
+    --> FastThreadLocal#get()--> return get(InternalThreadLocalMap.get());
+
+    -->InternalThreadLocalMap.get()获取ThreadLocalMap-->  if (thread instanceof FastThreadLocalThread)   return fastGet((FastThreadLocalThread) thread);
+
+    -->如果当前线程是FastThreadLocalThread那么调用fastGet
+
+    --> InternalThreadLocalMap#      fastGet()--> InternalThreadLocalMap threadLocalMap = thread.threadLocalMap();
+
+    --> FastThreadLocalThread extends Thread#   threadLocalMap()-->return threadLocalMap;
+
+    -->也就是说FastThreadLocalThread中直接维护了一个成员变量 private InternalThreadLocalMap threadLocalMap;
+
+    -->否则 当前线程是普通线程 return slowGet();
+
+    -->ThreadLocal<InternalThreadLocalMap> slowThreadLocalMap = UnpaddedInternalThreadLocalMap.slowThreadLocalMap;
+
+    -->ThreadLocal<InternalThreadLocalMap> slowThreadLocalMap = new ThreadLocal<InternalThreadLocalMap>();使用jdk的ThreadLocal
+
+    -->为每一个普通线程维护一个Netty的InternalThreadLocalMap
+
+    -->如果为空则初始化if (ret == null)      ret = new InternalThreadLocalMap();   slowThreadLocalMap.set(ret);
+
+
+    通过索引获取对象
+
+    --> FastThreadLocal#    get()-->Object v = threadLocalMap.indexedVariable(index);
+
+    -->InternalThreadLocalMap#  indexedVariable()--> Object[] lookup = indexedVariables;   return index < lookup.length? lookup[index] : UNSET;
+
+    -->indexedVariables是Object[] indexedVariables;
+
+    -->在InternalThreadLocalMap#-->InternalThreadLocalMap()-->super(newIndexedVariableTable()); 被初始化
+
+    -->也就是说每个InternalThreadLocalMap有一个Object[]
+
+    --> newIndexedVariableTable()       Object[] array = new Object[32];  UNSET = new Object();
+                                         Arrays.fill(array, UNSET);
+                                         return array;
+
+    -->再加上index是每个FastThreadLocal唯一的标识所以上面就可以通过下标获取到对象 lookup[index]
+
+    --> 如果 Object v = threadLocalMap.indexedVariable(index);拿到的v不是  UNSET那么返回
+
+    -->否则初始化 initialize(threadLocalMap);
+
+    -->FastThreadLocal# initialize()-->   v = initialValue(); 调用自定义的initialValue方法 例如FastThreadLocalTest中的
+
+    -->                    @Override
+                            protected Object initialValue() {
+                                return new Object();
+                            }
+
+     -->threadLocalMap.setIndexedVariable(index, v);-->InternalThreadLocalMap#  setIndexedVariable()
+
+     -->
+                        if (index < lookup.length) {
+                            //保留旧值
+                            Object oldValue = lookup[index];
+                            //设置新值
+                            lookup[index] = value;
+                            return oldValue == UNSET;
+                        } else {
+                        //扩容
+                            expandIndexedVariableTableAndSet(index, value);
+                            return true;
+                        }
+
+    set
+    -->FastThreadLocal# set(V value)--> set(InternalThreadLocalMap.get(), value);
+
+    -->在get中已经分析过获取InternalThreadLocalMap
+
+    -->FastThreadLocal#     set()-->threadLocalMap.setIndexedVariable(index, value)
+
+    -->
+                                //保存旧值
+                                Object oldValue = lookup[index];
+                                //插入新值
+                                lookup[index] = value;
+                                return oldValue == UNSET;
+
+    FastThreadLocalThread和Thread的区别
+
+    FastThreadLocalThread中直接维护了一个成员变量 private InternalThreadLocalMap threadLocalMap;
+
+    jdk的Thread维护了   ThreadLocal.ThreadLocalMap threadLocals = null;
+
+    但是如果不使用ThreadLocal，不会创建这个Map，一个线程第一次访问某个ThreadLocal变量时，才会创建
+
+    该Map是使用线性探测的方式解决hash冲突的问题，如果没有找到空闲的slot，就不断往后尝试，直到找到一个空闲的位置
+
+    插入entry，这种方式在经常遇到hash冲突时，影响效率
+
+
+    FastThreadLocal(下文简称ftl)直接使用数组避免了hash冲突的发生，具体做法是：每一个FastThreadLocal实例创建时
+    分配一个下标index；分配index使用AtomicInteger实现，每个FastThreadLocal都能获取到一个不重复的下标
+    当调用ftl.get()方法获取值时，直接从数组获取返回，如return array[index]
+
+    要发挥ftl的性能优势，必须和ftlt结合使用，否则就会退化到jdk的ThreadLocal 上面分析过如果是普通线程那么调用slowGet
+
+    对于ftltl来说 get 和set操作都是通过ftl.set ftl.get操作位于ftltl上面的一个InternalThreadLocalMap的一个对象数组 Object[]
+
+    而每一个ftltl上面都有一个自己的InternalThreadLocalMap 也就是说每个线程自己操作自己的数据
+
+    总结可以看ftl.txt
+
+
+
+
+
+
+
+
+
+    Recycler
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

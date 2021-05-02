@@ -1,0 +1,83 @@
+TL Thread ThreadLocalMap
+
+在ThreadLocalTest中threadLocal = new ThreadLocal<>(); 初始化了一个threadLocal
+
+然后创建了一个普通的线程Thread 在这个线程中调用了 threadLocal.set(yy); 设置一个User对象 由于是第一次设置
+
+1--创建一个ThreadLocalMap 将Entry插入到table的对应位置
+                                //初始化table 初始容量为16
+                                table = new Entry[INITIAL_CAPACITY];
+                                //计算这个ThreadLocal在table上面的index
+                                int i = firstKey.threadLocalHashCode & (INITIAL_CAPACITY - 1);
+                                //将i位置设置为一个新的Entry 这个Entry是{key:ThreadLocal,value:用户自己设置的value}
+                                table[i] = new Entry(firstKey, firstValue);
+                                size = 1;
+                                setThreshold(INITIAL_CAPACITY);
+
+2--如果是再次set     threadLocal.set(zz);
+
+    -->map不为空   --> map.set(this, value);--> int i = key.threadLocalHashCode & (len-1); 计算索引
+
+    -->length的长度是2^n的话,key.threadLocalHashCode & (len-1)就等于取模运算 速度更快
+
+    -->key.threadLocalHashCode 是在创建ThreadLocal的时候就计算出来了
+
+    -->由于是同一个ThreadLocal 相等 那么直接覆盖
+
+                    if (k == key) {
+                           e.value = value;
+                           return;
+                       }
+    --> 如果其他的ThreadLocal算出来的索引和这个相等 那么需要重新找一个index  i = nextIndex(i, len)
+
+    -->  return ((i + 1 < len) ? i + 1 : 0);
+
+    -->ThreadLocalMap使用线性探测法来解决哈希冲突 可以把table看成一个环形数组。
+
+    -->如果计算出来key的hash值为14，如果table[14]上已经有值，并且其key与当前key不一致，那么就发生了hash冲突
+
+    -->这个时候将14加1得到15，取table[15]进行判断，这个时候如果还是冲突会回到0，取table[0],以此类推，直到可以插入
+
+    -->            /**
+                    * table[i]上的key为空，说明被回收了（上面的弱引用中提到过）。
+                    * 这个时候说明改table[i]可以重新使用，用新的key-value将其替换,并删除其他无效的entry
+                    */
+                   if (k == null) {
+                       replaceStaleEntry(key, value, i);
+                       return;
+                   }
+
+    -->        //找到为空的插入位置，插入值，在为空的位置插入需要对size进行加1操作
+               tab[i] = new ThreadLocal.ThreadLocalMap.Entry(key, value);
+
+    -->         /**
+                 * cleanSomeSlots用于清除那些e.get()==null，也就是table[index] != null && table[index].get()==null
+                 * 之前提到过，这种数据key关联的对象已经被回收，所以这个Entry(table[index])可以被置null。
+                 * 如果没有清除任何entry,并且当前使用量达到了负载因子所定义(长度的2/3)，那么进行rehash()
+                 */
+                if (!cleanSomeSlots(i, sz) && sz >= threshold)
+                    rehash();
+
+    -->replaceStaleEntry 替换无效entry后面再看
+
+
+接下来是get
+
+    --> map.getEntry(this); --> int i = key.threadLocalHashCode & (table.length - 1);根据ThreadLocal计算index
+
+    --> return getEntryAfterMiss(key, i, e); 通过直接计算出来的key找不到对于的value的时候适用这个方法.
+
+    --> i = nextIndex(i, len);    //基于线性探测法向后扫描
+
+
+为什么key使用弱引用? 假设有一个TL  TL1 对应的value是一个User对象 A
+    如果是强引用 那么当A被回收之后 ThreadLocalMap本身依然还持有TL1的强引用 如果没有手动删除这个key，则TL1不会被回收
+
+    所以只要当前线程不消亡，ThreadLocalMap引用的那些对象就不会被回收，可以认为这导致Entry内存泄漏
+
+    但是即使是弱引用 虽然TL1被回收了,但是但是它对应的value并没有被回收，内存泄露依然存在 而且key被删了之后，变成了null
+
+    value更是无法被访问到了 所以需要在调用之后都调用它的remove()方法清除数据
+
+
+
