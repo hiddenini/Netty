@@ -1361,7 +1361,97 @@ Netty两大性能优化工具类
 
 
 
-    Recycler
+    Recycler 快速创建对象 并且可以youngGC的频率
+
+    PooledDirectByteBuf 中创建一个   PooledDirectByteBuf buf = RECYCLER.get();
+
+    Recycler的创建
+
+    -->    protected Recycler() {
+               this(DEFAULT_MAX_CAPACITY_PER_THREAD); 32k
+           }
+
+
+    -->     protected Recycler(int maxCapacityPerThread) {
+                this(maxCapacityPerThread, MAX_SHARED_CAPACITY_FACTOR); 2
+            }
+
+    --> MAX_DELAYED_QUEUES_PER_THREAD  Runtime.getRuntime().availableProcessors() * 2;
+
+    --> RATIO = safeFindNextPositivePowerOfTwo(SystemPropertyUtil.getInt("io.netty.recycler.ratio", 8)); 8
+
+    -->Stack
+        availableSharedCapacity = new AtomicInteger(max(maxCapacity / maxSharedCapacityFactor, LINK_CAPACITY)); 16k
+
+    从Recycler获取对象
+
+    获取stack
+    -->  Stack<T> stack = threadLocal.get(); 从 threadLocal中get 已经分析过了
+
+    --stack在Recycler   return new Stack<T>(Recycler.this, Thread.currentThread(), maxCapacityPerThread, maxSharedCapacityFactor,
+                                ratioMask, maxDelayedQueuesPerThread); 初始化
+
+    从stack中弹出
+    --> DefaultHandle<T> handle = stack.pop(); -->  DefaultHandle ret = elements[size];
+
+    -->如果为空 则调用自定义方法 (eg: return new User(handle))  handle.value = newObject(handle);
+
+    --> return (T) handle.value;
+
+回收对象打牌Recycler
+    同线程
+    --> user.recycle();--> handle.recycle(this);-->Recycler#DefaultHandle# recycle()-->stack.push(this);
+
+    -->如果当前线程是the thread that belongs to the Stack(当初创建stack的那个线程) 执行pushNow(item);
+
+    -->一系列的判断之后         if (size >= maxCapacity || dropHandle(item)) { 该对象没有被回收过并且当前的回收次数& 7 !=0 那么丢弃
+                                // Hit the maximum capacity or should drop - drop the possibly youngest object.
+                                return;
+                            }
+                            也就是说只回收1/8的对象
+
+    -->            if (size == elements.length) {
+                       elements = Arrays.copyOf(elements, min(size << 1, maxCapacity));
+                   } 扩容
+
+    -->最后将该对象放到  elements数组中          elements[size] = item;
+
+    异线程 在一个线程中创建 在另一个线程中回收
+    --> pushLater(item, currentThread); FastThreadLocal<Map<Stack<?>, WeakOrderQueue>> DELAYED_RECYCLED =
+                                                    new FastThreadLocal<Map<Stack<?>, WeakOrderQueue>>()
+
+    如果其他线程要回收该线程的对象那么就会生成一个WeakOrderQueue
+
+     看下那2张图
+
+
+     从其他线程收割对象
+     -->在pop时发现size为0 那么就去其他线程中(这些线程回收了该线程的对象)收割回来
+                    if (size == 0) {
+                        if (!scavenge()) {
+                            return null;
+                        }
+                        size = this.size;
+                    }
+
+     --> scavengeSome()
+
+     -->cursor.transfer(this) 从WeakOrderQueue 向当前线程的stack传输数据
+
+     -->如果当前head指向的link的读指针已经指向当前link的最后一个Handle 那么指向下一个Link(如果没有下一个link 则返回false)
+
+                            if (head.readIndex == LINK_CAPACITY) {
+                                if (head.next == null) {
+                                    return false;
+                                }
+                                this.head = head = head.next;
+                            }
+
+      --> final int srcSize = srcEnd - srcStart;要传输的数据个数
+
+      -->for() for循环将srcElems复制到dstElems
+
+
 
 
 
