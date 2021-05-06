@@ -1,0 +1,145 @@
+
+    private long allocateSubpage(int normCapacity) {
+        // Obtain the head of the PoolSubPage pool that is owned by the PoolArena and synchronize on it.
+        // This is need as we may add it back and so alter the linked-list structure.
+        PoolSubpage<T> head = arena.findSubpagePoolHead(normCapacity);
+        synchronized (head) {
+            //传入的d是11 也就是直接从叶子节点上面分配
+            int d = maxOrder; // subpages are only be allocated from pages i.e., leaves
+            int id = allocateNode(d);
+             // 小于0说明没有符合条件的内存块
+            if (id < 0) {
+                return id;
+            }
+
+            final PoolSubpage<T>[] subpages = this.subpages;
+            final int pageSize = this.pageSize;
+
+            freeBytes -= pageSize;
+             // 计算当前id对应的PoolSubpage数组中的位置
+
+                    private int subpageIdx(int memoryMapIdx) {
+                        return memoryMapIdx ^ maxSubpageAllocs; // remove highest set bit, to get offset
+                    }
+
+             //
+            int subpageIdx = subpageIdx(id);
+            PoolSubpage<T> subpage = subpages[subpageIdx];
+            if (subpage == null) {
+                subpage = new PoolSubpage<T>(head, this, id, runOffset(id), pageSize, normCapacity);
+                subpages[subpageIdx] = subpage;
+            } else {
+                subpage.init(head, normCapacity);
+            }
+            return subpage.allocate();
+        }
+    }
+
+
+        PoolSubpage<T> findSubpagePoolHead(int elemSize) {
+            int tableIdx;
+            PoolSubpage<T>[] table;
+            if (isTiny(elemSize)) { // < 512
+                tableIdx = elemSize >>> 4;
+                table = tinySubpagePools;
+            } else {
+                tableIdx = 0;
+                elemSize >>>= 10;
+                while (elemSize != 0) {
+                    elemSize >>>= 1;
+                    tableIdx ++;
+                }
+                table = smallSubpagePools;
+            }
+
+            return table[tableIdx];
+        }
+
+
+
+    private int findNextAvail() {
+        final long[] bitmap = this.bitmap;
+        final int bitmapLength = this.bitmapLength;
+         //遍历bitmap 拿出每一个个long 一个long有64位 每一位表示一块内存是否被使用了 1代表使用 0代表未使用
+        for (int i = 0; i < bitmapLength; i ++) {
+            //拿出一个long
+            long bits = bitmap[i];
+            //如果还有0 取反
+            if (~bits != 0) {
+                //那么找到第一个未被使用 即找到第一个0
+                return findNextAvail0(i, bits);
+            }
+        }
+        return -1;
+    }
+
+    private int findNextAvail0(int i, long bits) {
+        final int maxNumElems = this.maxNumElems;
+        //高位用来记录分配的内存在位图数组中的下标位置
+        final int baseVal = i << 6;
+
+        for (int j = 0; j < 64; j ++) {
+            //如果最低位是0 当前位置(最低位)表示的内存未分配
+            if ((bits & 1) == 0) {
+                int val = baseVal | j;
+                if (val < maxNumElems) {
+                    return val;
+                } else {
+                    break;
+                }
+            }
+            //右移，尝试下一位
+            bits >>>= 1;
+        }
+        return -1;
+    }
+
+     //bitmapIdx就是 return val; 中的val
+     final int bitmapIdx = getNextAvail();
+            //取数组元素的位置，即上述的baseVal 也即是在bitmap[]中的哪一个位置
+            int q = bitmapIdx >>> 6;
+            //相当于模64，计算得到上述算法流程中的变量j  拿到在具体的某一个long中的哪一位
+            int r = bitmapIdx & 63;
+            assert (bitmap[q] >>> r & 1) == 0;
+            //将该位置置为1 表示已经使用 防止被再次分配
+            bitmap[q] |= 1L << r;
+
+            if (-- numAvail == 0) {
+                removeFromPool();
+            }
+
+            return toHandle(bitmapIdx);
+
+
+
+         private long toHandle(int bitmapIdx) {
+             return 0x4000000000000000L | (long) bitmapIdx << 32 | memoryMapIdx;
+         }
+
+
+
+    private void initBufWithSubpage(PooledByteBuf<T> buf, long handle, int bitmapIdx, int reqCapacity) {
+        assert bitmapIdx != 0;
+
+        int memoryMapIdx = memoryMapIdx(handle);
+
+        //根据memoryMapIdx定位到chunk中具体的哪一页
+        PoolSubpage<T> subpage = subpages[subpageIdx(memoryMapIdx)];
+        assert subpage.doNotDestroy;
+        assert reqCapacity <= subpage.elemSize;
+
+        buf.init(
+            this, handle,
+            runOffset(memoryMapIdx) + (bitmapIdx & 0x3FFFFFFF) * subpage.elemSize, reqCapacity, subpage.elemSize,
+            arena.parent.threadCache());
+    }
+
+        //页内偏移地址
+        (bitmapIdx & 0x3FFFFFFF) * subpage.elemSize
+
+        //页的内存偏移
+        private int runOffset(int id) {
+            // represents the 0-based offset in #bytes from start of the byte-array chunk
+            int shift = id ^ 1 << depth(id);
+            return shift * runLength(id);
+        }

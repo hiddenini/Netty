@@ -14,5 +14,9 @@ public class Scratch {
         ByteBuf byteBuf = allocator.directBuffer(16);
 
         byteBuf.release();
+
+        ByteBuf byteBuf1 = allocator.heapBuffer(9*1024*1024);
+
+        byteBuf.release();
     }
 }

@@ -1,0 +1,81 @@
+Netty线程模型
+
+
+Netty拥有两个NIO线程池，分别是bossGroup和workerGroup
+前者处理新建连接请求，然后将新建立的连接轮询交给workerGroup中的其中一个NioEventLoop来处理 如何选择 chooser 取模
+
+后续该连接上的读写操作都是由同一个NioEventLoop来处理。
+
+注意，虽然bossGroup也能指定多个NioEventLoop（一个NioEventLoop对应一个线程），但是默认情况下只会有一个线程
+
+因为一般情况下应用程序只会使用一个对外监听端口。
+
+
+每个 Boss NioEventLoop 循环执行的任务包含 3 步：
+
+轮询 Accept 事件。
+
+处理 Accept I/O 事件，与 Client 建立连接，生成 NioSocketChannel，并将 NioSocketChannel 注册到某个 Worker NioEventLoop 的 Selector 上。
+
+处理任务队列中的任务，runAllTasks。任务队列中的任务包括用户调用 eventloop.execute 或 schedule 执行的任务，或者其他线程提交到该 eventloop 的任务。
+
+
+
+每个 Worker NioEventLoop 循环执行的任务包含 3 步：
+
+轮询 Read、Write 事件。
+
+处理 I/O 事件，即 Read、Write 事件，在 NioSocketChannel 可读、可写事件发生时进行处理。
+
+处理任务队列中的任务，runAllTasks。
+
+其中任务队列中的 Task 有 3 种典型使用场景。
+
+
+
+1--用户程序自定义的普通任务
+
+ctx.channel().eventLoop().execute(new Runnable() {
+   @Override
+   public void run() {
+       //...
+   }
+});
+
+
+2--非当前 Reactor 线程调用 Channel 的各种方法
+
+
+
+例如在推送系统的业务线程里面，根据用户的标识，找到对应的 Channel 引用，然后调用 Write 类方法向该用户推送消息，就会进入到这种场景。最终的 Write 会提交到任务队列中后被异步消费。
+
+
+
+3--用户自定义定时任务
+
+ctx.channel().eventLoop().schedule(new Runnable() {
+   @Override
+   public void run() {
+
+   }
+}, 60, TimeUnit.SECONDS);
+
+
+netty线程模型实践
+(1) 时间可控的简单业务直接在 I/O 线程上处理
+
+时间可控的简单业务直接在 I/O 线程上处理，如果业务非常简单，执行时间非常短，不需要与外部网络交互、访问数据库和磁盘
+不需要等待其它资源，则建议直接在业务 ChannelHandler 中执行，不需要再启业务的线程或者线程池。避免线程上下文切换
+也不存在线程并发问题。
+
+(2) 复杂和时间不可控业务建议投递到后端业务线程池统一处理
+复杂度较高或者时间不可控业务建议投递到后端业务线程池统一处理，对于此类业务
+不建议直接在业务 ChannelHandler 中启动线程或者线程池处理，建议将不同的业务统一封装成 Task
+统一投递到后端的业务线程池中进行处理。过多的业务ChannelHandler 会带来开发效率和可维护性问题
+不要把 Netty 当作业务容器，对于大多数复杂的业务产品，仍然需要集成或者开发自己的业务容器，做好和Netty 的架构分层。
+
+(3) 业务线程避免直接操作 ChannelHandler
+业务线程避免直接操作 ChannelHandler，对于 ChannelHandler，IO 线程和业务线程都可能会操作
+因为业务通常是多线程模型，这样就会存在多线程操作ChannelHandler。为了尽量避免多线程并发问题
+建议按照 Netty 自身的做法，通过将操作封装成独立的 Task 由 NioEventLoop 统一执行，而不是业务线程直接操作
+

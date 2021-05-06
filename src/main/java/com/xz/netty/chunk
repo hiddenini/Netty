@@ -1,0 +1,116 @@
+参考 chunk.jpg
+
+
+可以看出，图中的二叉树叶子节点有2^11=2048个，因而整颗树的节点数有4095个。PoolChunk将这4095个节点平铺到了一个长度为4096的数组上
+
+其第1号位存储了0，第2~3号位存储了1，第4~7号位存储了2，依次类推，整体上其实就是将这棵以层号表示的二叉树存入了一个数组中
+
+这里的数组就是左边的depthMap 通过这棵二叉树，可以快速通过下标得到其层数，比如2048号位置的值为11，表示其在二叉树的第11层
+
+// 存储了当前代表内存池的二叉树的各个节点的内存使用情况，该数组长度为4096，二叉树的头结点在该数组的
+// 第1号位，存储的值为0；两个一级子节点在该数组的第2号位和3号位，存储的值为1，依次类推。二叉树的叶节点
+// 个数为2048，因而总节点数为4095。在进行内存分配时，会从头结点开始比较，然后比较左子节点，然后比较右
+// 子节点，直到找到能够代表目标内存块的节点。当某个节点所代表的内存被申请之后，该节点的值就会被标记为12，
+// 表示该节点已经被占用
+private final byte[] memoryMap;
+
+
+
+在图中二叉树的每个节点上，我们为当前节点所代表的内存大小标记了一个数字，这个数字其实就表示了当前节点所能够分配的内存大小
+
+比如0代表16M，1代表了8M等等。这些数字就是由memoryMap来存储的，表示二叉树中每个节点代表的可分配内存大小
+
+其数据结构与depthMap完全一样。图中，每一个父节点所代表的可分配内存大小都等于两个子节点的和
+
+如果某个子节点的内存已经被分配了，那么该节点就会被标记为12，表示已分配
+
+// 这里depthMap存储的数据结构与memoryMap是完全一样的，只不过其值在初始化之后一直不会发生变化。
+// 该数据的主要作用在于通过目标索引位置值找到其在整棵树中对应的层数
+private final byte[] depthMap;
+
+
+// 页节点所代表的偏移量，默认为13，主要作用是计算目标内存在内存池中是在哪个层中，具体的计算公式为：
+// int d = maxOrder - (log2(normCapacity) - pageShifts);
+// 比如9KB，经过log2(9KB)得到14，maxOrder为11，计算就得到10，表示9KB内存在内存池中为第10层的数据
+private final int pageShifts;
+
+而它们的父节点则会被更新为另一个子节点的值，表示父节点可分配的内存就是其两个子节点所能提供的内存之和
+    // 这里maxOrder为11，表示整棵树最大的层数，log2(normCapacity)会将申请的目标内存大小转换为大于该大小的
+    // 第一个2的指数次幂数然后取2的对数的形式，比如log2(9KB)转换之后为14，这是因为大于9KB的第一个2的指数
+    // 次幂为16384，将其取2的对数后为14。pageShifts默认为13，这里整个表达式的目的就是快速计算出申请目标
+    // 内存（normCapacity）需要对应的层数。
+    private long allocateRun(int normCapacity) {
+        int d = maxOrder - (log2(normCapacity) - pageShifts);
+        int id = allocateNode(d);
+
+        // 通过前面讲的递归方式从先父节点，然后左子节点，接着右子节点的方式依次判断其是否与目标层数相等，
+        // 如果相等，则会将该节点所对应的在memoryMap数组中的位置索引返回
+        if (id < 0) {
+            return id;
+        }
+
+        // 更新剩余可分配内存的值
+        freeBytes -= runLength(id);
+        return id;
+    }
+
+
+
+
+
+    private int allocateNode(int d) {
+        int id = 1;
+        int initial = - (1 << d); // has last d bits = 0 and rest all = 1
+        // 获取memoryMap中索引为id的位置的数据层数，初始时获取的就是根节点的层数
+        byte val = value(id);
+        // 如果更节点的层数值都比d要大，说明当前PoolChunk中没有足够的内存用于分配目标内存，直接返回-1
+        //层数越小 表示的内存越大 如果根节点的层数都大于了目标的层数 那么直接返回 因为没有节点可以分配这个内存了
+        //0--16M
+        //1--8M
+        //2--4M
+        //....
+        if (val > d) { // unusable
+            return -1;
+        }
+
+        // 这里就是通过比较当前节点的值是否比目标节点的值要小，如果要小，则说明当前节点所代表的子树是能够
+        // 分配目标内存大小的，则会继续遍历其左子节点，然后遍历右子节点
+        while (val < d || (id & initial) == 0) { // id & initial == 1 << d for all ids at depth d, for < d it is 0
+            id <<= 1;
+            val = value(id);
+             // 这里val > d其实就是表示当前节点的数值比目标数值要大，也就是说当前节点是没法申请到目标容量的内存，
+             // 那么就会执行 id ^= 1，其实也就是将id切换到当前节点的兄弟节点，本质上其实就是从二叉树的
+             // 左子节点开始查找，如果左子节点无法分配目标大小的内存，那么就到右子节点进行查找
+            if (val > d) {
+                id ^= 1;
+                val = value(id);
+            }
+        }
+        // 当找到之后，获取该节点所在的层数
+        byte value = value(id);
+        assert value == d && (id & initial) == 1 << d : String.format("val = %d, id & initial = %d, d = %d",
+                value, id & initial, d);
+         // 将该memoryMap中该节点位置的值设置为unusable=12，表示其已经被占用
+        setValue(id, unusable); // mark as unusable
+        // 递归的更新父节点的值，使其继续保持”父节点存储的层数所代表的内存大小是未分配的
+       // 子节点的层数所代表的内存之和“的语义。
+        updateParentsAlloc(id);
+        return id;
+    }
+
+        //从当前节点开始向上回溯，以当前两个子节点memoryMap中取值较小的那个，来更新父节点的值 表示父节点的可分配内存变小了
+        //记住那句话 数字越小 表示能分配的内存越大
+                //0--16M
+                //1--8M
+                //2--4M
+                //....
+        private void updateParentsAlloc(int id) {
+            while (id > 1) {
+                int parentId = id >>> 1;
+                byte val1 = value(id);
+                byte val2 = value(id ^ 1);
+                byte val = val1 < val2 ? val1 : val2;
+                setValue(parentId, val);
+                id = parentId;
+            }
+        }

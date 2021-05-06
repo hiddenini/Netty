@@ -1,0 +1,166 @@
+
+
+
+             private void allocate(PoolThreadCache cache, PooledByteBuf<T> buf, final int reqCapacity) {
+                    //请求内存规整化
+                    final int normCapacity = normalizeCapacity(reqCapacity);
+                    // capacity < pageSize
+                    if (isTinyOrSmall(normCapacity)) { // capacity < pageSize
+                        int tableIdx;
+                        PoolSubpage<T>[] table;
+                        // normCapacity < 512
+                        boolean tiny = isTiny(normCapacity);
+                        if (tiny) { // < 512
+                            if (cache.allocateTiny(this, buf, reqCapacity, normCapacity)) {
+                                // was able to allocate out of the cache so move on
+                                return;
+                            }
+                             /*
+                             *  tinysubpages管理的内存段自16byte开始，以16byte依次递增自512
+                             *
+                             *   共映射到32个数组元素中，所以按照请求内存的大小除以16即可完成定位
+                             *
+                             *  static int tinyIdx(int normCapacity) {
+                             *         return normCapacity >>> 4;
+                             *  }
+                             *
+                             */
+
+
+
+                            tableIdx = tinyIdx(normCapacity);
+                            //如果<512则在tinysubpages数组中定位并执行分配
+                            table = tinySubpagePools;
+                        } else {
+                            if (cache.allocateSmall(this, buf, reqCapacity, normCapacity)) {
+                                // was able to allocate out of the cache so move on
+                                return;
+                            }
+
+                         /*
+                             *  smallsubpages的定位也不难理解，计算请求内存相对于1024的倍数即为相应的数组下标
+                             *  Small 分配逻辑
+                                一个 page 大小为 8192B，有且只有四种大小: 512B、1024B、2048B 和 4096B，以 2 倍递增。
+                                当申请的内存大小在 496B~4096B 范围内时，就能确定这四种中的一种
+                             *      static int smallIdx(int normCapacity) {
+                                        int tableIdx = 0;
+                                        int i = normCapacity >>> 10;
+                                        while (i != 0) {
+                                            i >>>= 1;
+                                            tableIdx ++;
+                                        }
+                                        return tableIdx;
+                                    }
+                             *
+                             */
+                            tableIdx = smallIdx(normCapacity);
+                            大于512时在smallpages数组中定位并执行分配，
+                            table = smallSubpagePools;
+                        }
+
+                        final PoolSubpage<T> head = table[tableIdx];
+
+                        /**
+                         * Synchronize on the head. This is needed as {@link PoolChunk#allocateSubpage(int)} and
+                         * {@link PoolChunk#free(long)} may modify the doubly linked list as well.
+                         */
+                        synchronized (head) {
+                            final PoolSubpage<T> s = head.next;
+                            //存在可分配的页面
+                            if (s != head) {
+                                assert s.doNotDestroy && s.elemSize == normCapacity;
+                                //调用PoolSubpage的分配
+                                long handle = s.allocate();
+                                assert handle >= 0;
+                                s.chunk.initBufWithSubpage(buf, handle, reqCapacity);
+
+                                if (tiny) {
+                                    allocationsTiny.increment();
+                                } else {
+                                    allocationsSmall.increment();
+                                }
+                                return;
+                            }
+                        }
+                        allocateNormal(buf, reqCapacity, normCapacity);
+                        return;
+                    }
+                    //chunk内分配
+                    if (normCapacity <= chunkSize) {
+                        if (cache.allocateNormal(this, buf, reqCapacity, normCapacity)) {
+                            // was able to allocate out of the cache so move on
+                            return;
+                        }
+                        allocateNormal(buf, reqCapacity, normCapacity);
+                    } else {
+                        // Huge allocations are never served via the cache so just call allocateHuge
+                        allocateHuge(buf, reqCapacity);
+                    }
+                }
+
+
+
+                //相邻的ChunkList之间在使用率上存在一定的重叠区域，即一个chunk的使用率为35的chunk可能存在于q000中
+                //也可能存在于q025中。这主要是为了防止，由于使用率不断变化，导致某个chunk在两个List中不停来回跳动的情况，加了这么一段重叠的缓存区域，可以减少跳动的次数
+                private void allocateNormal(PooledByteBuf<T> buf, int reqCapacity, int normCapacity) {
+                    if (q050.allocate(buf, reqCapacity, normCapacity) || q025.allocate(buf, reqCapacity, normCapacity) ||
+                        q000.allocate(buf, reqCapacity, normCapacity) || qInit.allocate(buf, reqCapacity, normCapacity) ||
+                        q075.allocate(buf, reqCapacity, normCapacity)) {
+                        return;
+                    }
+
+                    // Add a new chunk.
+                    //否则新建一个chunk，执行分配并初始化ByteBuf。新创建的Chunk将就被加入qInit链表中
+                    PoolChunk<T> c = newChunk(pageSize, maxOrder, pageShifts, chunkSize);
+                    long handle = c.allocate(normCapacity);
+                    assert handle > 0;
+                    c.initBuf(buf, handle, reqCapacity);
+                    qInit.add(c);
+                }
+
+               /**
+               *在PoolChunk或者PoolSubpage完成分配后，都会返回一个内存偏移量句柄handle作为标识
+
+                在执行初始化时，就是依据handle逆向初始化的过程
+
+               *PoolChunk返回的handle就是分配的内存在memoryMap中的节点编号
+
+                而PoolSubpage返回的handle中，低32表示当前page在chunk中的编号，高32包含了分配的内存段在bitmap中的索引。
+
+                所以，在handle中取低32位就能计算得到分配的内存在chunk中的节点编号
+
+                而取高32位信息就能计算得到分配的内存段在subpage中位图的索引位置
+               */
+               //对ByteBuf的初始化就是告诉ByteBuf，他可以使用的内存起点位置offset，请求内存的位置length和最大可用内存的位置maxLength
+               void initBuf(PooledByteBuf<T> buf, long handle, int reqCapacity) {
+                   int memoryMapIdx = memoryMapIdx(handle);
+                   int bitmapIdx = bitmapIdx(handle);
+                   //基于chunk的分配
+                   if (bitmapIdx == 0) {
+                       byte val = value(memoryMapIdx);
+                       assert val == unusable : String.valueOf(val);
+                       buf.init(this, handle, runOffset(memoryMapIdx), reqCapacity, runLength(memoryMapIdx),
+                                arena.parent.threadCache());
+                   } else {
+                   // 基于subpage的分配
+                       initBufWithSubpage(buf, handle, bitmapIdx, reqCapacity);
+                   }
+               }
+
+
+
+              //基于chunk的分配(buf.init)，ByteBuf三个内存参数的计算方式
+              private int runOffset(int id) {
+                  // represents the 0-based offset in #bytes from start of the byte-array chunk
+                  //得出的结果是 在当前层数中 该节点和该层的首节点的偏移量
+                  int shift = id ^ 1 << depth(id);
+                  //shift*runLength即为当前节点在chunk中的相对位置偏移量
+                  return shift * runLength(id);
+              }
+
+            //runLength表示了当前节点所在层里，每个节点拥有的内存大小值
+            private int runLength(int id) {
+                // represents the size in #bytes supported by node 'id' in the tree
+                return 1 << log2ChunkSize - depth(id);
+            }
+
